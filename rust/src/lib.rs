@@ -3,6 +3,8 @@ extern crate core;
 use core::ffi::CStr;
 
 const U32_SIZE_BYTES: usize = core::mem::size_of::<u32>();
+const ARRAY_DESCRIPTOR_SIZE: usize = U32_SIZE_BYTES;
+const MAP_DESCRIPTOR_SIZE: usize = 2 * U32_SIZE_BYTES;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -39,7 +41,7 @@ impl TryFrom<u8> for ElementTypeCode {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CursorError {
     DocumentTooShort,
 
@@ -56,7 +58,9 @@ pub enum CursorError {
 
     Utf8Error,
 
-    KeyOrIndexInvalid,
+    BufferIndexOutOfBounds,
+    ItemIndexOutOfBounds,
+    KeyNotFound,
 }
 
 /// A cursor into a SBSON object.
@@ -65,9 +69,10 @@ pub enum CursorError {
 /// creating sub-cursors when indexing into maps or arrays.
 ///
 /// Leaves can be read using `parse_*` methods.
+#[derive(Debug, Clone)]
 pub struct Cursor<'a> {
     /// A buffer pointing to an SBSON element node, excluding the type specifier.
-    /// 
+    ///
     /// ```txt
     ///    1B           4B
     /// ┌──────┬──────────────────┐
@@ -108,13 +113,10 @@ impl<'a> Cursor<'a> {
         let element_type = ElementTypeCode::try_from(*first)?;
 
         let child_count = match element_type {
-            ElementTypeCode::Map | ElementTypeCode::Array => {
-                get_u32_at_offset(buffer, 0)?
-            },
-            _ => 0
+            ElementTypeCode::Map | ElementTypeCode::Array => get_u32_at_offset(buffer, 0)?,
+            _ => 0,
         };
         // TODO: Make sure we have at least a valid amount of bytes for headers (array/map descriptors, etc.)
-        //       Arrays are easy as the descriptor has a constant size, maps are harder. (should we alter spec?)
 
         Ok(Cursor {
             buffer,
@@ -128,28 +130,39 @@ impl<'a> Cursor<'a> {
     }
 
     /// Determinte the amount of child-elements this cursor has.
-    /// 
+    ///
     /// This will always be 0 for non-container element types (i.e. not an array or a map).
     pub fn get_children_count(&self) -> usize {
         self.child_count as usize
     }
 
-    /// Returns a subcursor by indexing into a specific array item.
-    pub fn index_into_array(&self, index: usize) -> Result<Cursor<'a>, CursorError> {
-        self.ensure_element_type(ElementTypeCode::Array)?;
+    /// Returns a subcursor by indexing into a specific array/map item.
+    pub fn get_value_by_index(&self, index: usize) -> Result<Cursor<'a>, CursorError> {
+        let (descriptor_size, value_offset_within_header) = match self.element_type {
+            ElementTypeCode::Array => (ARRAY_DESCRIPTOR_SIZE, 0),
+            ElementTypeCode::Map => (MAP_DESCRIPTOR_SIZE, U32_SIZE_BYTES),
+            _ => {
+                return Err(CursorError::WrongElementType {
+                    actual: self.element_type,
+                })
+            }
+        };
 
         if index >= self.child_count as usize {
-            return Err(CursorError::KeyOrIndexInvalid);
+            return Err(CursorError::ItemIndexOutOfBounds);
         }
 
         // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
-        let item_header_start = U32_SIZE_BYTES + U32_SIZE_BYTES * index;
+        let item_header_start =
+            U32_SIZE_BYTES + descriptor_size * index + value_offset_within_header;
         let item_offset_start = get_u32_at_offset(self.buffer, item_header_start)? as usize;
         let buffer = if index == self.child_count as usize - 1 {
             self.buffer.get(item_offset_start..)
         } else {
-            let next_item_header_start = U32_SIZE_BYTES + U32_SIZE_BYTES * (index + 1);
-            let next_item_offset_start = get_u32_at_offset(self.buffer, next_item_header_start)? as usize;
+            let next_item_header_start =
+                U32_SIZE_BYTES + descriptor_size * (index + 1) + value_offset_within_header;
+            let next_item_offset_start =
+                get_u32_at_offset(self.buffer, next_item_header_start)? as usize;
             self.buffer.get(item_offset_start..next_item_offset_start)
         };
 
@@ -157,11 +170,77 @@ impl<'a> Cursor<'a> {
         Cursor::new(buffer)
     }
 
-    /// Returns a subcursor by indexing into a specific array item.
-    pub fn index_into_map(&self, key: &str) -> Result<Cursor<'a>, CursorError> {
-        self.ensure_element_type(ElementTypeCode::Array)?;
+    /// Searches a map item by key, and return a cursor for that item.
+    pub fn get_value_by_key(&self, key: &str) -> Result<Cursor<'a>, CursorError> {
+        let (_index, cursor) = self.get_value_and_index_by_key(key)?;
+        Ok(cursor)
+    }
 
-        unimplemented!()
+    /// Searches a map item by key, and return the item's index and cursor.
+    /// The index can be used with `get_value_by_index`, or saved into a path-vector.
+    pub fn get_value_and_index_by_key(
+        &self,
+        key: &str,
+    ) -> Result<(usize, Cursor<'a>), CursorError> {
+        self.ensure_element_type(ElementTypeCode::Map)?;
+
+        let descriptor_start = U32_SIZE_BYTES;
+        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
+
+        // This slice contains, for each element, a descriptor that looks like `{key_offset: u32, value_offset: u32}`.
+        // We cannot convert it to a `&[u32]` because we do not know that that the data is aligned.
+        let descriptors = self
+            .buffer
+            .get(descriptor_start..descriptor_end)
+            .ok_or(CursorError::DocumentTooShort)?;
+
+        // Perform a binary search on the key descriptors to see if we can find our items.
+        let mut window_size = self.child_count as usize;
+        let mut left = 0;
+        let mut right = window_size;
+        while left < right {
+            window_size = right - left;
+            let mid = left + window_size / 2;
+
+            // SAFETY: The slice size was checked in `get`, and is bound by:
+            //   - `descriptor_end - descriptor_start` == `MAP_DESCRIPTOR_SIZE * self.child_count`
+            let key_offset =
+                get_u32_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid).unwrap() as usize;
+
+            // Since `from_bytes_until_nul` is unstable, we have to get the exact placement of the null-terminator.
+            let null_terminator = self
+                .buffer
+                .iter()
+                .skip(key_offset)
+                .position(|&x| x == 0)
+                .ok_or(CursorError::UnterminatedString)?;
+
+            // SAFETY: `null_terminator` was found after `key_offset` in the buffer, so they're both in range.
+            let foo = &self.buffer[key_offset..key_offset + null_terminator];
+            match foo.cmp(key.as_bytes()) {
+                std::cmp::Ordering::Less => left = mid + 1,
+                std::cmp::Ordering::Greater => right = mid,
+                std::cmp::Ordering::Equal => {
+                    let value_offset =
+                        get_u32_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid + U32_SIZE_BYTES)
+                            .unwrap() as usize;
+                    let buffer = if mid == self.child_count as usize - 1 {
+                        self.buffer.get(value_offset..)
+                    } else {
+                        let next_value_offset = get_u32_at_offset(
+                            descriptors,
+                            MAP_DESCRIPTOR_SIZE * (mid + 1) + U32_SIZE_BYTES,
+                        )
+                        .unwrap() as usize;
+                        self.buffer.get(value_offset..next_value_offset)
+                    };
+                    let buffer = buffer.ok_or(CursorError::DocumentTooShort)?;
+                    return Cursor::new(buffer).map(|cursor| (mid, cursor));
+                }
+            }
+        }
+
+        Err(CursorError::KeyNotFound)
     }
 
     pub fn parse_bool(&self) -> Result<bool, CursorError> {
@@ -192,6 +271,7 @@ impl<'a> Cursor<'a> {
 
         // NOTE: Can also fail if there's an embedded null character; might want to use
         // `from_bytes_until_nul` when stabilisied.
+        // https://github.com/rust-lang/rust/issues/95027
         CStr::from_bytes_with_nul(self.buffer).map_err(|_| CursorError::UnterminatedString)
     }
 
@@ -199,7 +279,9 @@ impl<'a> Cursor<'a> {
     /// SBSON spec requires strings to be valid UTF-8 sans-nul; if you suspect
     /// your document is non-conforming, use `parse_cstr`.
     pub fn parse_str(&self) -> Result<&'a str, CursorError> {
-        self.parse_cstr()?.to_str().map_err(|_| CursorError::Utf8Error)
+        self.parse_cstr()?
+            .to_str()
+            .map_err(|_| CursorError::Utf8Error)
     }
 
     pub fn parse_binary(&self) -> Result<&'a [u8], CursorError> {
@@ -209,7 +291,6 @@ impl<'a> Cursor<'a> {
     }
 }
 
-
 fn get_byte_array_at<const N: usize>(buffer: &[u8], offset: usize) -> Result<[u8; N], CursorError> {
     // Unfortunate double-checking for length.
     // The second check (in try-into) can never be wrong, since `get` already returns a len-4 slice.
@@ -217,7 +298,7 @@ fn get_byte_array_at<const N: usize>(buffer: &[u8], offset: usize) -> Result<[u8
     // Maybe we can get a try_split_array_ref in the future:
     // https://github.com/rust-lang/rust/issues/90091
     buffer
-        .get(offset..(offset+N))
+        .get(offset..(offset + N))
         .ok_or(CursorError::DocumentTooShort)?
         .try_into()
         .map_err(|_| CursorError::DocumentTooShort)
@@ -235,9 +316,23 @@ mod tests {
     fn it_works() {
         // This buffer is the serialized representation of:
         //  - {'3': 4, 'BLARG': [1, 2, 3], 'FLORP': {'1': 3}}
-        let doc = b"\x03\x03\x00\x00\x00\x1e\x00\x00\x003\x00\'\x00\x00\x00BLARG\x00S\x00\x00\x00FLORP\x00\x12\x04\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00\x00\x00\x10\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00\x03\x01\x00\x00\x00\n\x00\x00\x001\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00";
+        let doc = b"\x03\x03\x00\x00\x00\x1c\x00\x00\x00*\x00\x00\x00\x1e\x00\x00\x003\x00\x00\x00$\x00\x00\x00_\x00\x00\x003\x00BLARG\x00FLORP\x00\x12\x04\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00\x00\x00\x10\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00\x03\x01\x00\x00\x00\x0c\x00\x00\x00\x0e\x00\x00\x001\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00";
+        // let doc = b"\x03\x03\x00\x00\x00\x1e\x00\x00\x003\x00\'\x00\x00\x00BLARG\x00S\x00\x00\x00FLORP\x00\x12\x04\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00\x00\x00\x10\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00\x03\x01\x00\x00\x00\n\x00\x00\x001\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00";
         let f = Cursor::new(doc).unwrap();
         assert_eq!(f.get_element_type(), ElementTypeCode::Map);
         assert_eq!(f.get_children_count(), 3);
+        // Should be the same because "3" is the first key, lexicographically.
+        let foo = f.get_value_by_key("3".into()).unwrap();
+        let florp = f.get_value_by_index(0).unwrap();
+        assert_eq!(foo.parse_i64(), Ok(4));
+        assert_eq!(florp.parse_i64(), Ok(4));
+        println!("{:?} - {:?}", foo, florp);
+        let bar = f
+            .get_value_by_key("BLARG")
+            .unwrap()
+            .get_value_by_index(0)
+            .unwrap();
+        println!("{:?}", bar);
+        assert_eq!(bar.parse_i64(), Ok(1));
     }
 }
