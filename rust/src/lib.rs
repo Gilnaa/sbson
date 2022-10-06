@@ -253,6 +253,11 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    pub fn parse_none(&self) -> Result<(), CursorError> {
+        self.ensure_element_type(ElementTypeCode::None)?;
+        Ok(())
+    }
+
     pub fn parse_i32(&self) -> Result<i32, CursorError> {
         self.ensure_element_type(ElementTypeCode::Int32)?;
 
@@ -312,27 +317,59 @@ fn get_u32_at_offset(buffer: &[u8], offset: usize) -> Result<u32, CursorError> {
 mod tests {
     use super::*;
 
+    /// This buffer is the serialized representation of:
+    /// ```python
+    /// {
+    ///     '3': b'beep boop',
+    ///     'BLARG': [1, 2, True, False, None],
+    ///     'FLORP': {'X': 255},
+    ///     "help me i'm trapped in a format factory help me before they": '...'
+    /// }
+    /// ```
+    const DOC: &[u8] = b"\x03\x04\x00\x00\x00$\x00\x00\x00n\x00\x00\x00&\x00\x00\x00x\x00\x00\x00,\x00\x00\x00\xa6\x00\x00\x002\x00\x00\x00\xbe\x00\x00\x003\x00BLARG\x00FLORP\x00help me i'm trapped in a format factory help me before they\x00\x05beep boop\x04\x05\x00\x00\x00\x18\x00\x00\x00!\x00\x00\x00*\x00\x00\x00+\x00\x00\x00,\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\t\x08\n\x03\x01\x00\x00\x00\x0c\x00\x00\x00\x0e\x00\x00\x00X\x00\x12\xff\x00\x00\x00\x00\x00\x00\x00\x02...\x00";
+
     #[test]
     fn it_works() {
-        // This buffer is the serialized representation of:
-        //  - {'3': 4, 'BLARG': [1, 2, 3], 'FLORP': {'1': 3}}
-        let doc = b"\x03\x03\x00\x00\x00\x1c\x00\x00\x00*\x00\x00\x00\x1e\x00\x00\x003\x00\x00\x00$\x00\x00\x00_\x00\x00\x003\x00BLARG\x00FLORP\x00\x12\x04\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00\x00\x00\x10\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00\x03\x01\x00\x00\x00\x0c\x00\x00\x00\x0e\x00\x00\x001\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00";
-        // let doc = b"\x03\x03\x00\x00\x00\x1e\x00\x00\x003\x00\'\x00\x00\x00BLARG\x00S\x00\x00\x00FLORP\x00\x12\x04\x00\x00\x00\x00\x00\x00\x00\x04\x03\x00\x00\x00\x10\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00\x03\x01\x00\x00\x00\n\x00\x00\x001\x00\x12\x03\x00\x00\x00\x00\x00\x00\x00";
-        let f = Cursor::new(doc).unwrap();
-        assert_eq!(f.get_element_type(), ElementTypeCode::Map);
-        assert_eq!(f.get_children_count(), 3);
+        let cur = Cursor::new(DOC).unwrap();
+        assert_eq!(cur.get_element_type(), ElementTypeCode::Map);
+        assert_eq!(cur.get_children_count(), 4);
+
         // Should be the same because "3" is the first key, lexicographically.
-        let foo = f.get_value_by_key("3".into()).unwrap();
-        let florp = f.get_value_by_index(0).unwrap();
-        assert_eq!(foo.parse_i64(), Ok(4));
-        assert_eq!(florp.parse_i64(), Ok(4));
-        println!("{:?} - {:?}", foo, florp);
-        let bar = f
+        let three_by_name = cur.get_value_by_key("3".into()).unwrap();
+        let three_by_index = cur.get_value_by_index(0).unwrap();
+        assert_eq!(three_by_name.parse_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_index.parse_binary(), Ok(&b"beep boop"[..]));
+
+        // Query ".BLARG[0]"
+        let blarg_0 = cur
             .get_value_by_key("BLARG")
             .unwrap()
             .get_value_by_index(0)
             .unwrap();
-        println!("{:?}", bar);
-        assert_eq!(bar.parse_i64(), Ok(1));
+        assert_eq!(blarg_0.parse_i64(), Ok(1));
+
+        // Query ".BLARG[1]", but drop the intermediary cursor
+        // to make sure we can in theory always keep one cursor.
+        let blarg_1 = {
+            let b = cur.get_value_by_key("BLARG").unwrap();
+            b.get_value_by_index(1).unwrap()
+        };
+        assert_eq!(blarg_1.parse_i64(), Ok(2));
+
+        // Query ".FLORP.X"
+        let florp_x = cur
+            .get_value_by_key("FLORP")
+            .unwrap()
+            .get_value_by_key("X")
+            .unwrap();
+        assert_eq!(florp_x.parse_i64(), Ok(0xFF));
+
+        let blarg = cur.get_value_by_key("BLARG").unwrap();
+        assert_eq!(blarg.get_value_by_index(2).unwrap().parse_bool(), Ok(true));
+        assert_eq!(blarg.get_value_by_index(3).unwrap().parse_bool(), Ok(false));
+        assert_eq!(blarg.get_value_by_index(4).unwrap().parse_none(), Ok(()));
+
+        // Query the last parameter
+        assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
     }
 }

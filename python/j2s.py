@@ -23,16 +23,18 @@ def encode(obj) -> bytes:
         obj_type, payload = ElementType.MAP, encode_map(obj)
     elif isinstance(obj, str):
         obj_type, payload = ElementType.STRING, obj.encode('utf-8') + b'\x00'
+    elif isinstance(obj, bytes):
+        obj_type, payload = ElementType.BINARY, obj
     # Must come after dict&str since they're also iterable.
     elif isinstance(obj, typing.Iterable):
         obj_type, payload = ElementType.ARRAY, encode_array(obj)
-    elif isinstance(obj, int):
-        obj_type, payload = ElementType.INT64, struct.pack("<Q", obj)
     elif isinstance(obj, bool):
         if obj:
             obj_type, payload = ElementType.TRUE, b''
         else:
             obj_type, payload = ElementType.FALSE, b''
+    elif isinstance(obj, int):
+        obj_type, payload = ElementType.INT64, struct.pack("<Q", obj)
     elif obj is None:
         obj_type, payload = ElementType.NONE, b''
     else:
@@ -59,6 +61,8 @@ def decode(view: memoryview):
         return decode_array(view[1:])
     elif element_type == ElementType.MAP:
         return decode_map(view[1:])
+    elif element_type == ElementType.BINARY:
+        return bytes(view[1:])
     else:
         raise ValueError(f"Unknown element type {element_type}")
 
@@ -163,9 +167,13 @@ def decode_array(view: memoryview) -> list:
 
 
 if __name__ == '__main__':
-    original = {"3": 4, "BLARG": [1,2,3], 'FLORP': {"1":3}}
+    original = {
+        '3': b"beep boop",
+        'BLARG': [1, 2, True, False, None],
+        'FLORP': {'X': 0xFF},
+        "help me i'm trapped in a format factory help me before they": "..."
+    }
     b = encode(original)
-    # b = encode({"florp": {'blarg': 3}})
     v = memoryview(b)
     o = decode(v)
     print(b)
