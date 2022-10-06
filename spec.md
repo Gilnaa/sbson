@@ -1,7 +1,7 @@
 
 # Specification Version 1.0
 
-SBSON (seekable BSON) is a binary format inspired by [BSON](https://bsonspec.org/), by is aimed to be seekable without deserialization.
+SBSON (seekable BSON) is a binary format inspired by [BSON](https://bsonspec.org/), but is aimed to be seekable without deserialization.
 The format itself is not that similar to BSON and is not supposed to be in any way compatible.
 
 Some notable design decisions:
