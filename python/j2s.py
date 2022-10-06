@@ -71,7 +71,7 @@ def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
     
     # TODO: Ensure this sorts lexicographically and anything smarter
     field_names = sorted(obj.keys())
-    values = [
+    field_values = [
         encode(obj[field_name])
         for field_name in field_names
     ]
@@ -80,15 +80,22 @@ def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
         for field_name in field_names
     ]
 
-    header_size = 4 + (4 * len(field_names)) + sum(map(len, field_names))
+    # Size of the count field + the descriptors
+    header_size = 4 + (8 * len(field_names))
+    keys_size = sum(map(len, field_names))
     descriptors = b''
-    payload = b''
-    offset = header_size
-    for name, value in zip(field_names, values):
-        descriptors += struct.pack('<I', offset) + name
-        payload += value
-        offset += len(value)
-    return struct.pack('<I', len(values)) + descriptors + payload
+    keys = b''
+    values = b''
+    keys_offset = header_size
+    values_offset = header_size + keys_size
+    for name, value in zip(field_names, field_values):
+        descriptors += struct.pack('<2I', keys_offset, values_offset)
+        keys += name
+        keys_offset += len(name)
+        values += value
+        values_offset += len(value)
+    assert keys_offset == header_size + keys_size
+    return struct.pack('<I', len(field_names)) + descriptors + keys + values
 
 
 def decode_map(view: memoryview) -> dict:
@@ -99,19 +106,18 @@ def decode_map(view: memoryview) -> dict:
     field_descriptors = []
     descriptor_view = view[4:]
     for _ in range(item_count):
-        offset, = struct.unpack_from("<I", descriptor_view)
-        descriptor_view = descriptor_view[4:]
+        keys_offset, values_offset = struct.unpack_from("<2I", descriptor_view)
+        descriptor_view = descriptor_view[8:]
 
         # Find null-terminator, why doesn't memoryview have `index`?
-        for i, b, in enumerate(descriptor_view):
+        for i, b, in enumerate(view[keys_offset:]):
             if b == 0:
                 # Skipping the null-terminator from both ends
-                name = str(descriptor_view[:i], 'utf-8')
-                descriptor_view = descriptor_view[i+1:]
+                name = str(view[keys_offset:keys_offset+i], 'utf-8')
                 break
         else:
             raise ValueError("Field name is not terminated.")
-        field_descriptors.append((offset, name))
+        field_descriptors.append((values_offset, name))
 
     output = {}
     for (a_offset, a_name), (b_offset, _) in zip(field_descriptors[:-1], field_descriptors[1:]):
@@ -157,9 +163,11 @@ def decode_array(view: memoryview) -> list:
 
 
 if __name__ == '__main__':
-    b = encode({"3": 4, "BLARG": [1,2,3], 'FLORP': {"1":3}})
+    original = {"3": 4, "BLARG": [1,2,3], 'FLORP': {"1":3}}
+    b = encode(original)
     # b = encode({"florp": {'blarg': 3}})
     v = memoryview(b)
     o = decode(v)
     print(b)
     print(o)
+    assert o == original
