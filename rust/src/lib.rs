@@ -18,7 +18,9 @@ pub enum ElementTypeCode {
     True = 0x09,
     None = 0x0A,
     Int32 = 0x10,
+    UInt32 = 0x11,
     Int64 = 0x12,
+    UInt64 = 0x13,
 }
 
 impl TryFrom<u8> for ElementTypeCode {

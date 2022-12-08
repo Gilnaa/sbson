@@ -15,7 +15,9 @@ class ElementType(IntEnum):
     TRUE = 0x09
     NONE = 0x0A
     INT32 = 0x10
+    UINT32 = 0x11
     INT64 = 0x12
+    UINT64 = 0x13
 
 
 def encode(obj) -> bytes:
@@ -34,7 +36,14 @@ def encode(obj) -> bytes:
         else:
             obj_type, payload = ElementType.FALSE, b''
     elif isinstance(obj, int):
-        obj_type, payload = ElementType.INT64, struct.pack("<Q", obj)
+        if obj > 2**63-1:
+            obj_type, payload = ElementType.UINT64, struct.pack("<Q", obj)
+        elif obj > 2**32-1:
+            obj_type, payload = ElementType.UINT32, struct.pack("<I", obj)
+        elif obj < -(2**32-1):
+            obj_type, payload = ElementType.INT32, struct.pack("<i", obj)
+        else:
+            obj_type, payload = ElementType.INT64, struct.pack("<q", obj)
     elif obj is None:
         obj_type, payload = ElementType.NONE, b''
     else:
