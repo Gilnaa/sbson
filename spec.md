@@ -36,7 +36,7 @@ map         ::= 	e_descriptor*N e_name*N element*N	For some value of N, a consec
 					lexicographically by the name of the element. The elements MUST be ordered respective to the 
 					descriptors.
 
-e_descriptor ::=    uint32 uint32	The offset of the element's name into the map (Starting with the map header/size field), 
+e_descriptor ::=    uint32 uint32	The offset of the element's name into the map (Starting with the element_type byte), 
                     followed by the offset of its value.
 
 array ::=           uint32 uint32*N element*N 	SBSON Array. Similar to a map with the name removed. The first uint32

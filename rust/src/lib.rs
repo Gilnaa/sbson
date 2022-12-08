@@ -3,6 +3,7 @@ extern crate core;
 use core::ffi::CStr;
 use std::ops::Range;
 
+const ELEMENT_TYPE_SIZE: usize = 1;
 const U32_SIZE_BYTES: usize = core::mem::size_of::<u32>();
 const ARRAY_DESCRIPTOR_SIZE: usize = U32_SIZE_BYTES;
 const MAP_DESCRIPTOR_SIZE: usize = 2 * U32_SIZE_BYTES;
@@ -125,15 +126,15 @@ impl RawCursor {
 
         // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
         let item_header_start =
-            1 + U32_SIZE_BYTES + descriptor_size * index + value_offset_within_header;
-        let item_offset_start = 1 + get_u32_at_offset(buffer, item_header_start)? as usize;
+            ELEMENT_TYPE_SIZE + U32_SIZE_BYTES + descriptor_size * index + value_offset_within_header;
+        let item_offset_start = get_u32_at_offset(buffer, item_header_start)? as usize;
         let range = if index == self.child_count as usize - 1 {
             item_offset_start..buffer.len()
         } else {
             let next_item_header_start =
-                1 + U32_SIZE_BYTES + descriptor_size * (index + 1) + value_offset_within_header;
+                ELEMENT_TYPE_SIZE + U32_SIZE_BYTES + descriptor_size * (index + 1) + value_offset_within_header;
             let next_item_offset_start =
-                1 + get_u32_at_offset(buffer, next_item_header_start)? as usize;
+                get_u32_at_offset(buffer, next_item_header_start)? as usize;
             item_offset_start..next_item_offset_start
         };
 
@@ -151,7 +152,7 @@ impl RawCursor {
         self.ensure_element_type(ElementTypeCode::Map)?;
         // let (_element_type, buffer) = buffer.split_first().ok_or(CursorError::DocumentTooShort)?;
 
-        let descriptor_start = 1 + U32_SIZE_BYTES;
+        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
         let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
 
         // This slice contains, for each element, a descriptor that looks like `{key_offset: u32, value_offset: u32}`.
@@ -171,7 +172,7 @@ impl RawCursor {
             // SAFETY: The slice size was checked in `get`, and is bound by:
             //   - `descriptor_end - descriptor_start` == `MAP_DESCRIPTOR_SIZE * self.child_count`
             let key_offset =
-                1 + get_u32_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid).unwrap() as usize;
+                get_u32_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid).unwrap() as usize;
 
             // Since `from_bytes_until_nul` is unstable, we have to get the exact placement of the null-terminator.
             let null_terminator = buffer
@@ -181,20 +182,19 @@ impl RawCursor {
                 .ok_or(CursorError::UnterminatedString)?;
 
             // SAFETY: `null_terminator` was found after `key_offset` in the buffer, so they're both in range.
-            let foo = &buffer[key_offset..key_offset + null_terminator];
-            dbg!(String::from_utf8_lossy(foo));
-            match foo.cmp(key.as_bytes()) {
+            let current_key = &buffer[key_offset..key_offset + null_terminator];
+            match current_key.cmp(key.as_bytes()) {
                 std::cmp::Ordering::Less => left = mid + 1,
                 std::cmp::Ordering::Greater => right = mid,
                 std::cmp::Ordering::Equal => {
                     let value_offset =
-                        1 + get_u32_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid + U32_SIZE_BYTES)
+                        get_u32_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid + U32_SIZE_BYTES)
                             .unwrap() as usize;
 
                     let range = if mid == self.child_count as usize - 1 {
                         value_offset..buffer.len()
                     } else {
-                        let next_value_offset = 1 + get_u32_at_offset(
+                        let next_value_offset = get_u32_at_offset(
                             descriptors,
                             MAP_DESCRIPTOR_SIZE * (mid + 1) + U32_SIZE_BYTES,
                         )
@@ -370,7 +370,7 @@ mod tests {
     ///     "help me i'm trapped in a format factory help me before they": '...'
     /// }
     /// ```
-    const DOC: &[u8] = b"\x03\x04\x00\x00\x00$\x00\x00\x00n\x00\x00\x00&\x00\x00\x00x\x00\x00\x00,\x00\x00\x00\xa6\x00\x00\x002\x00\x00\x00\xbe\x00\x00\x003\x00BLARG\x00FLORP\x00help me i'm trapped in a format factory help me before they\x00\x05beep boop\x04\x05\x00\x00\x00\x18\x00\x00\x00!\x00\x00\x00*\x00\x00\x00+\x00\x00\x00,\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\t\x08\n\x03\x01\x00\x00\x00\x0c\x00\x00\x00\x0e\x00\x00\x00X\x00\x12\xff\x00\x00\x00\x00\x00\x00\x00\x02...\x00";
+    const DOC: &[u8] = b"\x03\x04\x00\x00\x00%\x00\x00\x00o\x00\x00\x00\'\x00\x00\x00y\x00\x00\x00-\x00\x00\x00\xa7\x00\x00\x003\x00\x00\x00\xbf\x00\x00\x003\x00BLARG\x00FLORP\x00help me i\'m trapped in a format factory help me before they\x00\x05beep boop\x04\x05\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00+\x00\x00\x00,\x00\x00\x00-\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\t\x08\n\x03\x01\x00\x00\x00\r\x00\x00\x00\x0f\x00\x00\x00X\x00\x12\xff\x00\x00\x00\x00\x00\x00\x00\x02...\x00";
 
     #[test]
     fn it_works() {

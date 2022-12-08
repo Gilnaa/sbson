@@ -22,14 +22,14 @@ class ElementType(IntEnum):
 
 def encode(obj) -> bytes:
     if isinstance(obj, dict):
-        obj_type, payload = ElementType.MAP, encode_map(obj)
+        obj_type, payload = None, encode_map(obj)
     elif isinstance(obj, str):
         obj_type, payload = ElementType.STRING, obj.encode('utf-8') + b'\x00'
     elif isinstance(obj, bytes):
         obj_type, payload = ElementType.BINARY, obj
     # Must come after dict&str since they're also iterable.
     elif isinstance(obj, typing.Iterable):
-        obj_type, payload = ElementType.ARRAY, encode_array(obj)
+        obj_type, payload = None, encode_array(obj)
     elif isinstance(obj, bool):
         if obj:
             obj_type, payload = ElementType.TRUE, b''
@@ -49,6 +49,9 @@ def encode(obj) -> bytes:
     else:
         raise TypeError(f"Unexpected type {type(obj)} for value {obj}")
     
+    if obj_type is None:
+        return payload
+
     return struct.pack('B', int(obj_type)) + payload
 
 def decode(view: memoryview):
@@ -67,9 +70,9 @@ def decode(view: memoryview):
     elif element_type == ElementType.STRING:
         return str(view[1:], 'utf-8').rstrip('\x00')
     elif element_type == ElementType.ARRAY:
-        return decode_array(view[1:])
+        return decode_array(view)
     elif element_type == ElementType.MAP:
-        return decode_map(view[1:])
+        return decode_map(view)
     elif element_type == ElementType.BINARY:
         return bytes(view[1:])
     else:
@@ -82,7 +85,7 @@ def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
         assert isinstance(field_name, str)
         assert '\x00' not in field_name
     
-    # TODO: Ensure this sorts lexicographically and anything smarter
+    # TODO: Ensure this sorts lexicographically and not anything smarter
     field_names = sorted(obj.keys())
     field_values = [
         encode(obj[field_name])
@@ -93,8 +96,8 @@ def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
         for field_name in field_names
     ]
 
-    # Size of the count field + the descriptors
-    header_size = 4 + (8 * len(field_names))
+    # Size of the element type, count field, and the descriptors
+    header_size = 1 + 4 + (8 * len(field_names))
     keys_size = sum(map(len, field_names))
     descriptors = b''
     keys = b''
@@ -108,16 +111,16 @@ def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
         values += value
         values_offset += len(value)
     assert keys_offset == header_size + keys_size
-    return struct.pack('<I', len(field_names)) + descriptors + keys + values
+    return struct.pack('<BI', int(ElementType.MAP), len(field_names)) + descriptors + keys + values
 
 
 def decode_map(view: memoryview) -> dict:
-    item_count, = struct.unpack_from('<I', view)
+    _element_type, item_count, = struct.unpack_from('<BI', view)
     if item_count == 0:
         return {}
 
     field_descriptors = []
-    descriptor_view = view[4:]
+    descriptor_view = view[5:]
     for _ in range(item_count):
         keys_offset, values_offset = struct.unpack_from("<2I", descriptor_view)
         descriptor_view = descriptor_view[8:]
@@ -147,7 +150,8 @@ def encode_array(itr: typing.Iterable) -> bytes:
     values = [encode(value) for value in itr]
     count = len(values)
 
-    header_size = 4 + (4 * count)
+    # type(1B), count(4B), offset array
+    header_size = 1 + 4 + (4 * count)
     descriptors = b''
     payload = b''
     offset = header_size
@@ -155,15 +159,15 @@ def encode_array(itr: typing.Iterable) -> bytes:
         descriptors += struct.pack('<I', offset)
         payload += value
         offset += len(value)
-    return struct.pack('<I', len(values)) + descriptors + payload
+    return struct.pack('<BI', int(ElementType.ARRAY), len(values)) + descriptors + payload
 
 
 def decode_array(view: memoryview) -> list:
-    item_count, = struct.unpack_from('<I', view)
+    _element_type, item_count, = struct.unpack_from('<BI', view)
     if item_count == 0:
         return []
     
-    item_offsets = struct.unpack_from(f'<{item_count}I', view[4:])
+    item_offsets = struct.unpack_from(f'<{item_count}I', view[5:])
     items = []
     for a_offset, b_offset in zip(item_offsets[:-1], item_offsets[1:]):
         items.append(decode(view[a_offset:b_offset]))
