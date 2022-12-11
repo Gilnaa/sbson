@@ -10,6 +10,7 @@ default = ["std"]
 std = []
 
 [dependencies]
+memchr = { version = "2", default-features = false }
 serde = { version = "1.0.145", features = ["derive"] }
 
 [dev-dependencies]

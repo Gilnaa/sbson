@@ -18,12 +18,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use super::raw_cursor::{get_byte_array_at, RawCursor};
+use super::{CursorError, ElementTypeCode};
 use core::ffi::CStr;
 use std::ops::Range;
 use std::sync::Arc;
-use super::{CursorError, ElementTypeCode, };
-use super::raw_cursor::{RawCursor, get_byte_array_at};
-
 
 #[derive(Debug, Clone)]
 pub struct ArcCursor {
@@ -43,7 +42,7 @@ impl ArcCursor {
     pub fn payload_scoped_buffer(&self) -> &[u8] {
         let mut range = self.range.clone();
         // Skip the first element as it is the element type
-        let _ = range.next();
+        range.start += 1;
         &(*self.buffer).as_ref()[range]
     }
 }
@@ -73,7 +72,9 @@ impl ArcCursor {
 
     /// Returns a subcursor by indexing into a specific array/map item.
     pub fn get_value_by_index(&self, index: usize) -> Result<Self, CursorError> {
-        let (mut range, raw_cursor) = self.raw_cursor.get_value_by_index(self.scoped_buffer(), index)?;
+        let (mut range, raw_cursor) = self
+            .raw_cursor
+            .get_value_by_index(self.scoped_buffer(), index)?;
         range.start += self.range.start;
         range.end += self.range.start;
         Ok(Self {
@@ -91,18 +92,20 @@ impl ArcCursor {
 
     /// Searches a map item by key, and return the item's index and cursor.
     /// The index can be used with `get_value_by_index`, or saved into a path-vector.
-    pub fn get_value_and_index_by_key(
-        &self,
-        key: &str,
-    ) -> Result<(usize, Self), CursorError> {
-        let (index, mut range, raw_cursor) = self.raw_cursor.get_value_and_index_by_key(self.scoped_buffer(), key)?;
+    pub fn get_value_and_index_by_key(&self, key: &str) -> Result<(usize, Self), CursorError> {
+        let (index, mut range, raw_cursor) = self
+            .raw_cursor
+            .get_value_and_index_by_key(self.scoped_buffer(), key)?;
         range.start += self.range.start;
         range.end += self.range.start;
-        Ok((index, Self {
-            buffer: self.buffer.clone(),
-            raw_cursor,
-            range,
-        }))
+        Ok((
+            index,
+            Self {
+                buffer: self.buffer.clone(),
+                raw_cursor,
+                range,
+            },
+        ))
     }
 
     pub fn parse_bool(&self) -> Result<bool, CursorError> {
@@ -121,25 +124,35 @@ impl ArcCursor {
     }
 
     pub fn parse_i32(&self) -> Result<i32, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Int32)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Int32)?;
 
-        Ok(i32::from_le_bytes(get_byte_array_at(self.payload_scoped_buffer(), 0)?))
+        Ok(i32::from_le_bytes(get_byte_array_at(
+            self.payload_scoped_buffer(),
+            0,
+        )?))
     }
 
     pub fn parse_i64(&self) -> Result<i64, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Int64)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Int64)?;
 
-        Ok(i64::from_le_bytes(get_byte_array_at(self.payload_scoped_buffer(), 0)?))
+        Ok(i64::from_le_bytes(get_byte_array_at(
+            self.payload_scoped_buffer(),
+            0,
+        )?))
     }
 
     /// Returns a pointer to the null-terminated string pointed to by the cursor
     pub fn parse_cstr(&self) -> Result<&CStr, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::String)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::String)?;
 
         // NOTE: Can also fail if there's an embedded null character; might want to use
         // `from_bytes_until_nul` when stabilisied.
         // https://github.com/rust-lang/rust/issues/95027
-        CStr::from_bytes_with_nul(self.payload_scoped_buffer()).map_err(|_| CursorError::UnterminatedString)
+        CStr::from_bytes_with_nul(self.payload_scoped_buffer())
+            .map_err(|_| CursorError::UnterminatedString)
     }
 
     /// Try to parse the string as a UTF-8 string.
@@ -152,7 +165,8 @@ impl ArcCursor {
     }
 
     pub fn parse_binary(&self) -> Result<&[u8], CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Binary)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Binary)?;
 
         Ok(self.payload_scoped_buffer())
     }

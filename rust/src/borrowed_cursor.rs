@@ -18,9 +18,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use core::ffi::CStr;
+use super::raw_cursor::{get_byte_array_at, RawCursor, ELEMENT_TYPE_SIZE};
 use super::{CursorError, ElementTypeCode};
-use super::raw_cursor::{RawCursor, get_byte_array_at, ELEMENT_TYPE_SIZE};
+use core::ffi::CStr;
 
 /// A cursor into a SBSON object.
 ///
@@ -42,10 +42,7 @@ impl<'a> BorrowedCursor<'a> {
         let buffer = buffer.as_ref();
         let raw_cursor = RawCursor::new(buffer)?;
 
-        Ok(BorrowedCursor {
-            buffer,
-            raw_cursor,
-        })
+        Ok(BorrowedCursor { buffer, raw_cursor })
     }
 
     pub fn get_element_type(&self) -> ElementTypeCode {
@@ -80,11 +77,16 @@ impl<'a> BorrowedCursor<'a> {
         &self,
         key: &str,
     ) -> Result<(usize, BorrowedCursor<'a>), CursorError> {
-        let (index, range, raw_cursor) = self.raw_cursor.get_value_and_index_by_key(self.buffer, key)?;
-        Ok((index, BorrowedCursor {
-            buffer: &self.buffer[range],
-            raw_cursor,
-        }))
+        let (index, range, raw_cursor) = self
+            .raw_cursor
+            .get_value_and_index_by_key(self.buffer, key)?;
+        Ok((
+            index,
+            BorrowedCursor {
+                buffer: &self.buffer[range],
+                raw_cursor,
+            },
+        ))
     }
 
     pub fn parse_bool(&self) -> Result<bool, CursorError> {
@@ -103,25 +105,35 @@ impl<'a> BorrowedCursor<'a> {
     }
 
     pub fn parse_i32(&self) -> Result<i32, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Int32)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Int32)?;
 
-        Ok(i32::from_le_bytes(get_byte_array_at(self.buffer, ELEMENT_TYPE_SIZE)?))
+        Ok(i32::from_le_bytes(get_byte_array_at(
+            self.buffer,
+            ELEMENT_TYPE_SIZE,
+        )?))
     }
 
     pub fn parse_i64(&self) -> Result<i64, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Int64)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Int64)?;
 
-        Ok(i64::from_le_bytes(get_byte_array_at(self.buffer, ELEMENT_TYPE_SIZE)?))
+        Ok(i64::from_le_bytes(get_byte_array_at(
+            self.buffer,
+            ELEMENT_TYPE_SIZE,
+        )?))
     }
 
     /// Returns a pointer to the null-terminated string pointed to by the cursor
     pub fn parse_cstr(&self) -> Result<&'a CStr, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::String)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::String)?;
 
         // NOTE: Can also fail if there's an embedded null character; might want to use
         // `from_bytes_until_nul` when stabilisied.
         // https://github.com/rust-lang/rust/issues/95027
-        CStr::from_bytes_with_nul(&self.buffer[ELEMENT_TYPE_SIZE..]).map_err(|_| CursorError::UnterminatedString)
+        CStr::from_bytes_with_nul(&self.buffer[ELEMENT_TYPE_SIZE..])
+            .map_err(|_| CursorError::UnterminatedString)
     }
 
     /// Try to parse the string as a UTF-8 string.
@@ -134,7 +146,8 @@ impl<'a> BorrowedCursor<'a> {
     }
 
     pub fn parse_binary(&self) -> Result<&'a [u8], CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Binary)?;
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Binary)?;
 
         Ok(&self.buffer[ELEMENT_TYPE_SIZE..])
     }

@@ -20,14 +20,14 @@
 
 extern crate core;
 
-mod raw_cursor;
-mod borrowed_cursor;
 #[cfg(feature = "std")]
 mod arc_cursor;
+mod borrowed_cursor;
+mod raw_cursor;
 
-pub use borrowed_cursor::BorrowedCursor;
 #[cfg(feature = "std")]
 pub use arc_cursor::ArcCursor;
+pub use borrowed_cursor::BorrowedCursor;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -83,7 +83,7 @@ pub enum CursorError {
 
     Utf8Error,
 
-    BufferIndexOutOfBounds,
+    EmbeddedOffsetOutOfBounds,
     ItemIndexOutOfBounds,
     KeyNotFound,
 }
