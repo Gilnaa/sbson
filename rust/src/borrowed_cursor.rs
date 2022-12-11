@@ -1,15 +1,15 @@
 // Copyright (c) 2022 Gilad Naaman
-
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-
+//
 // The above copyright notice and this permission notice shall be included in all
 // copies or substantial portions of the Software.
-
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -20,7 +20,7 @@
 
 use core::ffi::CStr;
 use super::{CursorError, ElementTypeCode};
-use super::raw_cursor::{RawCursor, get_byte_array_at};
+use super::raw_cursor::{RawCursor, get_byte_array_at, ELEMENT_TYPE_SIZE};
 
 /// A cursor into a SBSON object.
 ///
@@ -30,18 +30,7 @@ use super::raw_cursor::{RawCursor, get_byte_array_at};
 /// Leaves can be read using `parse_*` methods.
 #[derive(Debug, Clone)]
 pub struct BorrowedCursor<'a> {
-    /// A buffer pointing to an SBSON element node, excluding the type specifier.
-    ///
-    /// ```txt
-    ///    1B           4B
-    /// ┌──────┬──────────────────┐
-    /// │ \x10 │ \x02\x00\x00\x00 │
-    /// └──────┴──────────────────┘
-    ///     ▲            ▲
-    ///     │            │
-    ///     │         buffer
-    ///  element_type
-    /// ```
+    /// A buffer pointing to an SBSON element node, starting with the the type specifier.
     buffer: &'a [u8],
 
     raw_cursor: RawCursor,
@@ -116,13 +105,13 @@ impl<'a> BorrowedCursor<'a> {
     pub fn parse_i32(&self) -> Result<i32, CursorError> {
         self.raw_cursor.ensure_element_type(ElementTypeCode::Int32)?;
 
-        Ok(i32::from_le_bytes(get_byte_array_at(self.buffer, 1)?))
+        Ok(i32::from_le_bytes(get_byte_array_at(self.buffer, ELEMENT_TYPE_SIZE)?))
     }
 
     pub fn parse_i64(&self) -> Result<i64, CursorError> {
         self.raw_cursor.ensure_element_type(ElementTypeCode::Int64)?;
 
-        Ok(i64::from_le_bytes(get_byte_array_at(self.buffer, 1)?))
+        Ok(i64::from_le_bytes(get_byte_array_at(self.buffer, ELEMENT_TYPE_SIZE)?))
     }
 
     /// Returns a pointer to the null-terminated string pointed to by the cursor
@@ -132,7 +121,7 @@ impl<'a> BorrowedCursor<'a> {
         // NOTE: Can also fail if there's an embedded null character; might want to use
         // `from_bytes_until_nul` when stabilisied.
         // https://github.com/rust-lang/rust/issues/95027
-        CStr::from_bytes_with_nul(&self.buffer[1..]).map_err(|_| CursorError::UnterminatedString)
+        CStr::from_bytes_with_nul(&self.buffer[ELEMENT_TYPE_SIZE..]).map_err(|_| CursorError::UnterminatedString)
     }
 
     /// Try to parse the string as a UTF-8 string.
@@ -147,6 +136,6 @@ impl<'a> BorrowedCursor<'a> {
     pub fn parse_binary(&self) -> Result<&'a [u8], CursorError> {
         self.raw_cursor.ensure_element_type(ElementTypeCode::Binary)?;
 
-        Ok(&self.buffer[1..])
+        Ok(&self.buffer[ELEMENT_TYPE_SIZE..])
     }
 }

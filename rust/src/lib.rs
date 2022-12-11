@@ -22,8 +22,12 @@ extern crate core;
 
 mod raw_cursor;
 mod borrowed_cursor;
+#[cfg(feature = "std")]
+mod arc_cursor;
 
 pub use borrowed_cursor::BorrowedCursor;
+#[cfg(feature = "std")]
+pub use arc_cursor::ArcCursor;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -102,6 +106,51 @@ mod tests {
     #[test]
     fn it_works() {
         let cur = BorrowedCursor::new(DOC).unwrap();
+        assert_eq!(cur.get_element_type(), ElementTypeCode::Map);
+        assert_eq!(cur.get_children_count(), 4);
+
+        // Should be the same because "3" is the first key, lexicographically.
+        let three_by_name = cur.get_value_by_key("3".into()).unwrap();
+        let three_by_index = cur.get_value_by_index(0).unwrap();
+        assert_eq!(three_by_name.parse_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_index.parse_binary(), Ok(&b"beep boop"[..]));
+
+        // Query ".BLARG[0]"
+        let blarg_0 = cur
+            .get_value_by_key("BLARG")
+            .unwrap()
+            .get_value_by_index(0)
+            .unwrap();
+        assert_eq!(blarg_0.parse_i64(), Ok(1));
+
+        // Query ".BLARG[1]", but drop the intermediary cursor
+        // to make sure we can in theory always keep one cursor.
+        let blarg_1 = {
+            let b = cur.get_value_by_key("BLARG").unwrap();
+            b.get_value_by_index(1).unwrap()
+        };
+        assert_eq!(blarg_1.parse_i64(), Ok(2));
+
+        // Query ".FLORP.X"
+        let florp_x = cur
+            .get_value_by_key("FLORP")
+            .unwrap()
+            .get_value_by_key("X")
+            .unwrap();
+        assert_eq!(florp_x.parse_i64(), Ok(0xFF));
+
+        let blarg = cur.get_value_by_key("BLARG").unwrap();
+        assert_eq!(blarg.get_value_by_index(2).unwrap().parse_bool(), Ok(true));
+        assert_eq!(blarg.get_value_by_index(3).unwrap().parse_bool(), Ok(false));
+        assert_eq!(blarg.get_value_by_index(4).unwrap().parse_none(), Ok(()));
+
+        // Query the last parameter
+        assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
+    }
+
+    #[test]
+    fn it_works_arc() {
+        let cur = ArcCursor::new(DOC).unwrap();
         assert_eq!(cur.get_element_type(), ElementTypeCode::Map);
         assert_eq!(cur.get_children_count(), 4);
 

@@ -19,9 +19,9 @@
 // SOFTWARE.
 
 use super::{ElementTypeCode, CursorError};
-use std::ops::Range;
+use core::ops::Range;
 
-const ELEMENT_TYPE_SIZE: usize = 1;
+pub const ELEMENT_TYPE_SIZE: usize = 1;
 const U32_SIZE_BYTES: usize = core::mem::size_of::<u32>();
 const ARRAY_DESCRIPTOR_SIZE: usize = U32_SIZE_BYTES;
 const MAP_DESCRIPTOR_SIZE: usize = 2 * U32_SIZE_BYTES;
