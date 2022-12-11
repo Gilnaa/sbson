@@ -18,6 +18,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+use crate::CachedMapCursor;
+
 use super::raw_cursor::{get_byte_array_at, RawCursor};
 use super::{CursorError, ElementTypeCode};
 use core::ffi::CStr;
@@ -52,6 +54,15 @@ impl ArcCursor {
         let buffer = buffer.into();
         let raw_cursor = RawCursor::new(&buffer)?;
         let range = 0..buffer.as_ref().len();
+        Ok(Self {
+            buffer,
+            raw_cursor,
+            range,
+        })
+    }
+
+    pub fn new_with_range(buffer: Arc<[u8]>, range: Range<usize>) -> Result<Self, CursorError> {
+        let raw_cursor = RawCursor::new(buffer.as_ref().get(range.clone()).ok_or(CursorError::DocumentTooShort)?)?;
         Ok(Self {
             buffer,
             raw_cursor,
@@ -169,5 +180,11 @@ impl ArcCursor {
             .ensure_element_type(ElementTypeCode::Binary)?;
 
         Ok(self.payload_scoped_buffer())
+    }
+
+    pub fn cache_map(&self) -> Result<CachedMapCursor, CursorError> {
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Map)?;
+        CachedMapCursor::new(self.buffer.clone(), self.scoped_buffer(), self.raw_cursor.clone(), self.range.clone())
     }
 }

@@ -76,6 +76,14 @@ pub struct RawCursor {
     pub child_count: u32,
 }
 
+pub struct MapIter<'a> {
+    index: u32,
+    max: u32,
+    descriptors: &'a [u8],
+    whole_buffer: &'a [u8],
+    self_offset: usize,
+}
+
 impl RawCursor {
     /// Shorthand for validating that the cursor points to a particular SBSON node.
     pub fn ensure_element_type(&self, expected_type: ElementTypeCode) -> Result<(), CursorError> {
@@ -224,5 +232,70 @@ impl RawCursor {
         }
 
         Err(CursorError::KeyNotFound)
+    }
+
+    pub fn iter_map<'a>(&self, self_range: Range<usize>, buffer: &'a [u8]) -> Result<MapIter<'a>, CursorError> {
+        self.ensure_element_type(ElementTypeCode::Map)?;
+
+        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
+        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
+
+        // This slice contains, for each element, a descriptor that looks like `{key_offset: u32, value_offset: u32}`.
+        // We cannot convert it to a `&[u32]` because we do not know that that the data is aligned.
+        let descriptors = buffer
+            .get(descriptor_start..descriptor_end)
+            .ok_or(CursorError::DocumentTooShort)?;
+        Ok(MapIter {
+            index: 0,
+            max: self.child_count,
+            descriptors: descriptors,
+            whole_buffer: buffer,
+            self_offset: self_range.start,
+        })
+    }
+}
+
+impl<'a> MapIter<'a> {
+    fn get_item_at_index(&self) -> Result<(&'a str, Range<usize>), CursorError> {
+        let (key_offset, value_offset) =
+            get_u32_pair_at_offset(self.descriptors, MAP_DESCRIPTOR_SIZE * self.index as usize)
+                .unwrap();
+        let key_offset = key_offset as usize;
+        let value_offset = value_offset as usize;
+
+        let key_slice = self
+            .whole_buffer
+            .get(key_offset..)
+            .ok_or(CursorError::UnterminatedString)?;
+        let null_terminator =
+            memchr::memchr(0, key_slice).ok_or(CursorError::UnterminatedString)?;
+        let key = &self.whole_buffer[key_offset..key_offset + null_terminator];
+        let key = core::str::from_utf8(key).map_err(|_| CursorError::Utf8Error)?;
+
+        let next_value_offset = if self.index < self.max - 1 {
+            get_u32_pair_at_offset(
+                self.descriptors,
+                MAP_DESCRIPTOR_SIZE * (self.index as usize + 1),
+            )
+            .unwrap()
+            .1 as usize
+        } else {
+            self.whole_buffer.len()
+        };
+        Ok((key, self.self_offset+value_offset..self.self_offset+next_value_offset))
+    }
+}
+
+impl<'a> Iterator for MapIter<'a> {
+    type Item = Result<(&'a str, Range<usize>), CursorError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.max {
+            return None;
+        }
+
+        let item = self.get_item_at_index();
+        self.index += 1;
+        Some(item)
     }
 }
