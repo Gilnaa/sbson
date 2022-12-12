@@ -20,9 +20,8 @@
 
 use crate::ArcCursor;
 
-use super::raw_cursor::{get_byte_array_at, RawCursor};
-use super::{CursorError, ElementTypeCode};
-use core::ffi::CStr;
+use super::raw_cursor::RawCursor;
+use super::CursorError;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
