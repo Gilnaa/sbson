@@ -20,16 +20,19 @@
 
 extern crate core;
 
-#[cfg(feature = "std")]
-mod arc_cursor;
 mod borrowed_cursor;
-#[cfg(feature = "std")]
-mod cached_map_cursor;
 mod raw_cursor;
 
 #[cfg(feature = "std")]
-pub use arc_cursor::ArcCursor;
+mod arc_cursor;
+#[cfg(feature = "std")]
+mod cached_map_cursor;
+#[cfg(feature = "pyo3")]
+mod pyo3;
+
 pub use borrowed_cursor::BorrowedCursor;
+#[cfg(feature = "std")]
+pub use arc_cursor::ArcCursor;
 #[cfg(feature = "std")]
 pub use cached_map_cursor::CachedMapCursor;
 

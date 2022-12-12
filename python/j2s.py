@@ -188,7 +188,7 @@ def generate_test_vectors():
     }
     goto = {
         "top": {
-            f"item_{i}": {
+            f"item_{i:04}": {
                 "something": [100] * 100
             } for i in range(8000)
         }

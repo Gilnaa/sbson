@@ -18,48 +18,48 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::ArcCursor;
-
-use super::raw_cursor::RawCursor;
-use super::CursorError;
+use crate::{ArcCursor, CursorError, BorrowedCursor};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct CachedMapCursor {
-    /// A reference to the entire top-level document
-    pub buffer: Arc<[u8]>,
+    pub cursor: ArcCursor,
+
     /// A map from the children names to their range inside the buffer.
     pub children: HashMap<String, Range<usize>>,
-    pub declared_children_count: usize,
 }
 
 impl CachedMapCursor {
     pub fn new(
-        buffer: Arc<[u8]>,
-        map_buffer: &[u8],
-        raw_cursor: RawCursor,
-        self_range: Range<usize>,
+        cursor: ArcCursor,
     ) -> Result<Self, CursorError> {
-        let children: HashMap<_, _> = raw_cursor
-                    .iter_map(self_range, map_buffer)?
+        let children: HashMap<_, _> = cursor.raw_cursor
+                    .iter_map(cursor.range.clone(), cursor.scoped_buffer())?
                     .flat_map(|kv| kv.ok())
                     .map(|(key, range)| {
                         (key.to_string(), range)
                     })
                     .collect();
         Ok(CachedMapCursor {
-            buffer,
+            cursor,
             children,
-            declared_children_count: raw_cursor.child_count as usize,
         })
     }
 
     /// Searches a map item by key, and return a cursor for that item.
     pub fn get_value_by_key(&self, key: &str) -> Result<ArcCursor, CursorError> {
         let range = self.children.get(key).ok_or(CursorError::KeyNotFound)?;
-        ArcCursor::new_with_range(self.buffer.clone(), range.clone())
+        ArcCursor::new_with_range(self.cursor.buffer.clone(), range.clone())
     }
-    
+
+    pub fn get_value_by_index(&self, index: usize) -> Result<ArcCursor, CursorError> {
+        // Fallback to using the underlying cursor since the hashmap doesn't know anything
+        // about indicies.
+        self.cursor.get_value_by_index(index)
+    }
+
+    pub fn iter_borrowed<'a>(&'a self) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+        self.cursor.iter_borrowed()
+    }
 }

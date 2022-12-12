@@ -253,6 +253,24 @@ impl RawCursor {
             self_offset: self_range.start,
         })
     }
+
+    // pub fn iter_array<'a>(&self, self_range: Range<usize>, buffer: &'a [u8]) -> Result<impl Iterator<Item = Range<usize>>, CursorError> {
+    //     self.ensure_element_type(ElementTypeCode::Array)?;
+    //     let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
+    //     let descriptor_end = descriptor_start + ARRAY_DESCRIPTOR_SIZE * self.child_count as usize;
+    //     let descriptors = buffer
+    //         .get(descriptor_start..descriptor_end)
+    //         .ok_or(CursorError::DocumentTooShort)?;
+
+    //     // TODO: Use `array_chunks` when stabilised to save the `try_into().unwrap()`.
+    //     let d = descriptors.chunks(ARRAY_DESCRIPTOR_SIZE)
+    //         .map(|offset_slice| u32::from_le_bytes(offset_slice.try_into().unwrap()))
+    //         .chain(Some(self_range.len() as u32));
+
+    //     Ok((0..self.child_count).map(|idx| {
+    //         let offset = get_u32_at_offset(descriptors, idx * ARRAY_DESCRIPTOR_SIZE)
+    //     }))
+    // }
 }
 
 impl<'a> MapIter<'a> {

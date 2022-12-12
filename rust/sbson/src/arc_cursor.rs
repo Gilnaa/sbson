@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::CachedMapCursor;
+use crate::{CachedMapCursor, BorrowedCursor};
 
 use super::raw_cursor::{get_byte_array_at, RawCursor};
 use super::{CursorError, ElementTypeCode};
@@ -29,10 +29,10 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct ArcCursor {
     /// A reference to the entire top-level document
-    buffer: Arc<[u8]>,
+    pub(crate) buffer: Arc<[u8]>,
     /// The range of the current pointed-to element inside the buffer.
-    range: Range<usize>,
-    raw_cursor: RawCursor,
+    pub(crate) range: Range<usize>,
+    pub(crate) raw_cursor: RawCursor,
 }
 
 impl ArcCursor {
@@ -185,6 +185,19 @@ impl ArcCursor {
     pub fn cache_map(&self) -> Result<CachedMapCursor, CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::Map)?;
-        CachedMapCursor::new(self.buffer.clone(), self.scoped_buffer(), self.raw_cursor.clone(), self.range.clone())
+        CachedMapCursor::new(self.clone())
+    }
+
+    pub fn iter_borrowed<'a>(&'a self) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+        Ok(self.raw_cursor
+                    .iter_map(self.range.clone(), self.scoped_buffer())?
+                    .flat_map(|kv| kv.ok())
+                    .flat_map(|(key, range)| {
+                        BorrowedCursor::new(&self.buffer[range]).ok().map(|cursor| (key.to_string(), cursor))
+                    }))
+    }
+
+    pub fn borrow(&self) -> BorrowedCursor<'_> {
+        BorrowedCursor::new_with_cursor(self.scoped_buffer(), self.raw_cursor.clone())
     }
 }

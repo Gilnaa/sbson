@@ -8,10 +8,12 @@ edition = "2021"
 [features]
 default = ["std"]
 std = []
+pyo3 = ["dep:pyo3"]
 
 [dependencies]
 memchr = { version = "2", default-features = false }
 serde = { version = "1.0.145", features = ["derive"] }
+pyo3 = { version = "0.17.3", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.4", features = ["html_reports"] }

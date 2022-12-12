@@ -45,6 +45,10 @@ impl<'a> BorrowedCursor<'a> {
         Ok(BorrowedCursor { buffer, raw_cursor })
     }
 
+    pub fn new_with_cursor(buffer: &'a [u8], raw_cursor: RawCursor) -> Self {
+        BorrowedCursor { buffer, raw_cursor }
+    }
+
     pub fn get_element_type(&self) -> ElementTypeCode {
         self.raw_cursor.element_type
     }
@@ -150,5 +154,14 @@ impl<'a> BorrowedCursor<'a> {
             .ensure_element_type(ElementTypeCode::Binary)?;
 
         Ok(&self.buffer[ELEMENT_TYPE_SIZE..])
+    }
+
+    pub fn iter_map(&'a self) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+        Ok(self.raw_cursor
+                    .iter_map(0..self.buffer.len(), self.buffer)?
+                    .flat_map(|kv| kv.ok())
+                    .flat_map(|(key, range)| {
+                        BorrowedCursor::new(&self.buffer[range]).ok().map(|cursor| (key.to_string(), cursor))
+                    }))
     }
 }
