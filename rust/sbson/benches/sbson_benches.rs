@@ -19,7 +19,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // The test vector has a map with 8000 items named `item_{i}`.
     // Since keying into the map is a O(log2(N)), we're measuring access at various points.
-    for i in (0..8000).step_by(80) {
+    for i in (0..8000) {
         let item_name = format!("item_{i:04}");
 
         group.bench_function(BenchmarkId::new("goto_borrow", i), |b| {
