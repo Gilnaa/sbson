@@ -21,7 +21,14 @@ struct Cursor {
 #[pymethods]
 impl Cursor {
     #[new]
-    fn new(data: Vec<u8>) -> PyResult<Self> {
+    fn new(data: &[u8]) -> PyResult<Self> {
+        let cursor = sbson::ArcCursor::new(data)?;
+        Ok(Cursor { path_segments: vec![], cursor_impl: CursorImpl::Generic(cursor) })
+    }
+
+    #[staticmethod]
+    fn new_from_file(file_name: &str) -> PyResult<Self> {
+        let data = std::fs::read(file_name)?;
         let cursor = sbson::ArcCursor::new(data)?;
         Ok(Cursor { path_segments: vec![], cursor_impl: CursorImpl::Generic(cursor) })
     }
