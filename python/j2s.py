@@ -22,37 +22,34 @@ class ElementType(IntEnum):
 
 def encode(obj) -> bytes:
     if isinstance(obj, dict):
-        obj_type, payload = None, encode_map(obj)
+        payload = encode_map(obj)
     elif isinstance(obj, str):
-        obj_type, payload = ElementType.STRING, obj.encode('utf-8') + b'\x00'
+        payload = struct.pack("B", ElementType.STRING) + obj.encode('utf-8') + b'\x00'
     elif isinstance(obj, bytes):
-        obj_type, payload = ElementType.BINARY, obj
-    # Must come after dict&str since they're also iterable.
-    elif isinstance(obj, typing.Iterable):
-        obj_type, payload = None, encode_array(obj)
+        payload = struct.pack("B", ElementType.BINARY) + obj
     elif isinstance(obj, bool):
         if obj:
-            obj_type, payload = ElementType.TRUE, b''
+            payload = struct.pack("B", ElementType.TRUE)
         else:
-            obj_type, payload = ElementType.FALSE, b''
+            payload = struct.pack("B", ElementType.FALSE)
     elif isinstance(obj, int):
         if obj > 2**63-1:
-            obj_type, payload = ElementType.UINT64, struct.pack("<Q", obj)
+            payload = struct.pack("<BQ", int(ElementType.UINT64), obj)
         elif obj > 2**32-1:
-            obj_type, payload = ElementType.UINT32, struct.pack("<I", obj)
+            payload = struct.pack("<BI", int(ElementType.UINT32), obj)
         elif obj < -(2**32-1):
-            obj_type, payload = ElementType.INT32, struct.pack("<i", obj)
+            payload = struct.pack("<Bi", int(ElementType.INT32), obj)
         else:
-            obj_type, payload = ElementType.INT64, struct.pack("<q", obj)
+            payload = struct.pack("<Bq", int(ElementType.INT64), obj)
     elif obj is None:
-        obj_type, payload = ElementType.NONE, b''
+        payload = struct.pack("B", ElementType.NONE)
+    # Must come after dict&str since they're also iterable.
+    elif isinstance(obj, typing.Iterable):
+        payload = encode_array(obj)
     else:
         raise TypeError(f"Unexpected type {type(obj)} for value {obj}")
-    
-    if obj_type is None:
-        return payload
 
-    return struct.pack('B', int(obj_type)) + payload
+    return payload
 
 def decode(view: memoryview):
     element_type = view[0]
@@ -64,9 +61,9 @@ def decode(view: memoryview):
     elif element_type == ElementType.NONE:
         return None
     elif element_type == ElementType.INT32:
-        return struct.unpack('<I', view[1:5])[0]
+        return struct.unpack_from('<I', view, offset=1)[0]
     elif element_type == ElementType.INT64:
-        return struct.unpack('<Q', view[1:9])[0]
+        return struct.unpack_from('<Q', view, offset=1)[0]
     elif element_type == ElementType.STRING:
         return str(view[1:], 'utf-8').rstrip('\x00')
     elif element_type == ElementType.ARRAY:
@@ -100,15 +97,13 @@ def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
     header_size = 1 + 4 + (8 * len(field_names))
     keys_size = sum(map(len, field_names))
     descriptors = b''
-    keys = b''
-    values = b''
+    keys = b''.join(field_names)
+    values = b''.join(field_values)
     keys_offset = header_size
     values_offset = header_size + keys_size
     for name, value in zip(field_names, field_values):
         descriptors += struct.pack('<2I', keys_offset, values_offset)
-        keys += name
         keys_offset += len(name)
-        values += value
         values_offset += len(value)
     assert keys_offset == header_size + keys_size
     return struct.pack('<BI', int(ElementType.MAP), len(field_names)) + descriptors + keys + values
@@ -120,28 +115,29 @@ def decode_map(view: memoryview) -> dict:
         return {}
 
     field_descriptors = []
-    descriptor_view = view[5:]
-    for _ in range(item_count):
-        keys_offset, values_offset = struct.unpack_from("<2I", descriptor_view)
-        descriptor_view = descriptor_view[8:]
-
-        # Find null-terminator, why doesn't memoryview have `index`?
-        for i, b, in enumerate(view[keys_offset:]):
-            if b == 0:
-                # Skipping the null-terminator from both ends
-                name = str(view[keys_offset:keys_offset+i], 'utf-8')
-                break
+    descriptors = struct.unpack_from(f"<{2*item_count}I", view[5:])
+    for idx in range(item_count):
+        keys_offset, values_offset = descriptors[idx*2:(idx + 1)*2]
+        if idx != item_count - 1:
+            next_key_offset = descriptors[(idx + 1) * 2]
         else:
-            raise ValueError("Field name is not terminated.")
+            # Use first value offset
+            next_key_offset = descriptors[1]
+        name = view[keys_offset:next_key_offset]
+        if name[-1] != 0:
+            raise ValueError(f"Field {name} is not terminated.")
+        name = str(name, 'utf-8').strip('\0')
         field_descriptors.append((values_offset, name))
-
+    field_descriptors.append((len(view), None))
     output = {}
     for (a_offset, a_name), (b_offset, _) in zip(field_descriptors[:-1], field_descriptors[1:]):
-        output[a_name] = decode(view[a_offset:b_offset])
+        v = view[a_offset:b_offset]
+        o = decode(v)
+        output[a_name] = o
 
-    if len(field_descriptors) > 0:
-        last_field_offset, last_field_name = field_descriptors[-1]
-        output[last_field_name] = decode(view[last_field_offset:])
+    # if len(field_descriptors) > 0:
+    #     last_field_offset, last_field_name = field_descriptors[-1]
+    #     output[last_field_name] = decode(view[last_field_offset:])
 
     return output
         
@@ -153,11 +149,10 @@ def encode_array(itr: typing.Iterable) -> bytes:
     # type(1B), count(4B), offset array
     header_size = 1 + 4 + (4 * count)
     descriptors = b''
-    payload = b''
+    payload = b''.join(values)
     offset = header_size
     for value in values:
         descriptors += struct.pack('<I', offset)
-        payload += value
         offset += len(value)
     return struct.pack('<BI', int(ElementType.ARRAY), len(values)) + descriptors + payload
 
@@ -170,7 +165,9 @@ def decode_array(view: memoryview) -> list:
     item_offsets = struct.unpack_from(f'<{item_count}I', view[5:])
     items = []
     for a_offset, b_offset in zip(item_offsets[:-1], item_offsets[1:]):
-        items.append(decode(view[a_offset:b_offset]))
+        v = view[a_offset:b_offset]
+        o = decode(v)
+        items.append(o)
 
     if len(item_offsets) > 0:
         last_item_offset = item_offsets[-1]
@@ -201,9 +198,11 @@ def generate_test_vectors():
     for name, vector in vectors.items():
         # with open(f"../test_vectors/{name}.json", "w") as f:
         #     json.dump(f, vector)
-        
+        print(f"Encoding {name}")
         sbson = encode(vector)
+        print(f"Decoding {name}")
         assert decode(sbson) == vector
+        print(f"Saving {name}.sbson")
         with open(f"../test_vectors/{name}.sbson", "wb") as f:
             f.write(sbson)
 
