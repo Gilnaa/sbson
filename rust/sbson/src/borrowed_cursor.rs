@@ -164,4 +164,10 @@ impl<'a> BorrowedCursor<'a> {
                         BorrowedCursor::new(&self.buffer[range]).ok().map(|cursor| (key.to_string(), cursor))
                     }))
     }
+
+    pub fn iter_array(&'a self) -> Result<impl Iterator<Item=BorrowedCursor<'a>>, CursorError> {
+        Ok(self.raw_cursor.iter_array(0..self.buffer.len(), self.buffer)?.flat_map(|range| {
+            BorrowedCursor::new(&self.buffer[range]).ok()
+        }))
+    }
 }

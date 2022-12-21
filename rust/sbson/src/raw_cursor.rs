@@ -254,23 +254,24 @@ impl RawCursor {
         })
     }
 
-    // pub fn iter_array<'a>(&self, self_range: Range<usize>, buffer: &'a [u8]) -> Result<impl Iterator<Item = Range<usize>>, CursorError> {
-    //     self.ensure_element_type(ElementTypeCode::Array)?;
-    //     let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
-    //     let descriptor_end = descriptor_start + ARRAY_DESCRIPTOR_SIZE * self.child_count as usize;
-    //     let descriptors = buffer
-    //         .get(descriptor_start..descriptor_end)
-    //         .ok_or(CursorError::DocumentTooShort)?;
+    pub fn iter_array<'a>(&self, self_range: Range<usize>, buffer: &'a [u8]) -> Result<impl Iterator<Item = Range<usize>> + 'a, CursorError> {
+        self.ensure_element_type(ElementTypeCode::Array)?;
+        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
+        let descriptor_end = descriptor_start + ARRAY_DESCRIPTOR_SIZE * self.child_count as usize;
+        let descriptors = buffer
+            .get(descriptor_start..descriptor_end)
+            .ok_or(CursorError::DocumentTooShort)?;
 
-    //     // TODO: Use `array_chunks` when stabilised to save the `try_into().unwrap()`.
-    //     let d = descriptors.chunks(ARRAY_DESCRIPTOR_SIZE)
-    //         .map(|offset_slice| u32::from_le_bytes(offset_slice.try_into().unwrap()))
-    //         .chain(Some(self_range.len() as u32));
+        // TODO: Use `array_chunks` when stabilised to save the `try_into().unwrap()`.
+        //  - https://github.com/rust-lang/rust/issues/74985
+        let start_offsets = descriptors.chunks(ARRAY_DESCRIPTOR_SIZE)
+            .map(|offset_slice| u32::from_le_bytes(offset_slice.try_into().unwrap()));
+        let end_offsets = start_offsets.clone().skip(1).chain(Some(self_range.len() as u32));
 
-    //     Ok((0..self.child_count).map(|idx| {
-    //         let offset = get_u32_at_offset(descriptors, idx * ARRAY_DESCRIPTOR_SIZE)
-    //     }))
-    // }
+        Ok(start_offsets.zip(end_offsets).map(|(start, end)| {
+            start as usize..end as usize
+        }))
+    }
 }
 
 impl<'a> MapIter<'a> {
