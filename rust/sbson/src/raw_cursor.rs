@@ -157,6 +157,43 @@ impl RawCursor {
         Ok((range, RawCursor::new(buffer)?))
     }
 
+    pub fn get_key_by_index<'a>(
+        &self,
+        buffer: &'a [u8],
+        index: usize,
+    ) -> Result<&'a str, CursorError> {
+        self.ensure_element_type(ElementTypeCode::Map)?;
+
+        if index >= self.child_count as usize {
+            return Err(CursorError::ItemIndexOutOfBounds);
+        }
+
+        // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
+        let item_header_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES + MAP_DESCRIPTOR_SIZE * index;
+        let key_offset_start = get_u32_at_offset(buffer, item_header_start)? as usize;
+        let key_offset_end = if index == self.child_count as usize - 1 {
+            let first_item_header_payload_offset = ELEMENT_TYPE_SIZE
+                + U32_SIZE_BYTES // < Children count
+                + U32_SIZE_BYTES; // < Second dword in header is the payload offset
+
+            get_u32_at_offset(buffer, first_item_header_payload_offset)? as usize
+        } else {
+            let next_item_header_start =
+                ELEMENT_TYPE_SIZE + U32_SIZE_BYTES + MAP_DESCRIPTOR_SIZE * (index + 1);
+
+            get_u32_at_offset(buffer, next_item_header_start)? as usize
+        };
+
+        let key_buf = buffer
+            .get(key_offset_start..key_offset_end)
+            .ok_or(CursorError::DocumentTooShort)?;
+        // TODO: Convert to proper error
+        let key_cstr = core::ffi::CStr::from_bytes_with_nul(key_buf).unwrap();
+
+        // TODO: Maybe expose actual UTF-8 errors
+        key_cstr.to_str().map_err(|_| CursorError::Utf8Error)
+    }
+
     /// Searches a map item by key, and return the item's index and cursor.
     /// The index can be used with `get_value_by_index`, or saved into a path-vector.
     pub fn get_value_and_index_by_key(
@@ -234,7 +271,11 @@ impl RawCursor {
         Err(CursorError::KeyNotFound)
     }
 
-    pub fn iter_map<'a>(&self, self_range: Range<usize>, buffer: &'a [u8]) -> Result<MapIter<'a>, CursorError> {
+    pub fn iter_map<'a>(
+        &self,
+        self_range: Range<usize>,
+        buffer: &'a [u8],
+    ) -> Result<MapIter<'a>, CursorError> {
         self.ensure_element_type(ElementTypeCode::Map)?;
 
         let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
@@ -254,7 +295,11 @@ impl RawCursor {
         })
     }
 
-    pub fn iter_array<'a>(&self, self_range: Range<usize>, buffer: &'a [u8]) -> Result<impl Iterator<Item = Range<usize>> + 'a, CursorError> {
+    pub fn iter_array<'a>(
+        &self,
+        self_range: Range<usize>,
+        buffer: &'a [u8],
+    ) -> Result<impl Iterator<Item = Range<usize>> + 'a, CursorError> {
         self.ensure_element_type(ElementTypeCode::Array)?;
         let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
         let descriptor_end = descriptor_start + ARRAY_DESCRIPTOR_SIZE * self.child_count as usize;
@@ -264,13 +309,17 @@ impl RawCursor {
 
         // TODO: Use `array_chunks` when stabilised to save the `try_into().unwrap()`.
         //  - https://github.com/rust-lang/rust/issues/74985
-        let start_offsets = descriptors.chunks(ARRAY_DESCRIPTOR_SIZE)
+        let start_offsets = descriptors
+            .chunks(ARRAY_DESCRIPTOR_SIZE)
             .map(|offset_slice| u32::from_le_bytes(offset_slice.try_into().unwrap()));
-        let end_offsets = start_offsets.clone().skip(1).chain(Some(self_range.len() as u32));
+        let end_offsets = start_offsets
+            .clone()
+            .skip(1)
+            .chain(Some(self_range.len() as u32));
 
-        Ok(start_offsets.zip(end_offsets).map(|(start, end)| {
-            start as usize..end as usize
-        }))
+        Ok(start_offsets
+            .zip(end_offsets)
+            .map(|(start, end)| start as usize..end as usize))
     }
 }
 
@@ -301,7 +350,10 @@ impl<'a> MapIter<'a> {
         } else {
             self.whole_buffer.len()
         };
-        Ok((key, self.self_offset+value_offset..self.self_offset+next_value_offset))
+        Ok((
+            key,
+            self.self_offset + value_offset..self.self_offset + next_value_offset,
+        ))
     }
 }
 

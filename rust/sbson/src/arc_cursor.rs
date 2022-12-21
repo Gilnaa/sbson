@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::{CachedMapCursor, BorrowedCursor};
+use crate::{BorrowedCursor, CachedMapCursor};
 
 use super::raw_cursor::{get_byte_array_at, RawCursor};
 use super::{CursorError, ElementTypeCode};
@@ -62,7 +62,12 @@ impl ArcCursor {
     }
 
     pub fn new_with_range(buffer: Arc<[u8]>, range: Range<usize>) -> Result<Self, CursorError> {
-        let raw_cursor = RawCursor::new(buffer.as_ref().get(range.clone()).ok_or(CursorError::DocumentTooShort)?)?;
+        let raw_cursor = RawCursor::new(
+            buffer
+                .as_ref()
+                .get(range.clone())
+                .ok_or(CursorError::DocumentTooShort)?,
+        )?;
         Ok(Self {
             buffer,
             raw_cursor,
@@ -93,6 +98,11 @@ impl ArcCursor {
             raw_cursor,
             range,
         })
+    }
+
+    pub fn get_key_by_index(&self, index: usize) -> Result<&str, CursorError> {
+        self.raw_cursor
+            .get_key_by_index(self.scoped_buffer(), index)
     }
 
     /// Searches a map item by key, and return a cursor for that item.
@@ -183,18 +193,22 @@ impl ArcCursor {
     }
 
     pub fn cache_map(&self) -> Result<CachedMapCursor, CursorError> {
-        self.raw_cursor
-            .ensure_element_type(ElementTypeCode::Map)?;
+        self.raw_cursor.ensure_element_type(ElementTypeCode::Map)?;
         CachedMapCursor::new(self.clone())
     }
 
-    pub fn iter_borrowed<'a>(&'a self) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
-        Ok(self.raw_cursor
-                    .iter_map(self.range.clone(), self.scoped_buffer())?
-                    .flat_map(|kv| kv.ok())
-                    .flat_map(|(key, range)| {
-                        BorrowedCursor::new(&self.buffer[range]).ok().map(|cursor| (key.to_string(), cursor))
-                    }))
+    pub fn iter_borrowed<'a>(
+        &'a self,
+    ) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+        Ok(self
+            .raw_cursor
+            .iter_map(self.range.clone(), self.scoped_buffer())?
+            .flat_map(|kv| kv.ok())
+            .flat_map(|(key, range)| {
+                BorrowedCursor::new(&self.buffer[range])
+                    .ok()
+                    .map(|cursor| (key.to_string(), cursor))
+            }))
     }
 
     pub fn borrow(&self) -> BorrowedCursor<'_> {

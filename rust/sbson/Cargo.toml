@@ -6,13 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["std"]
+default = ["std", "serde"]
 std = []
-pyo3 = ["dep:pyo3"]
+pyo3 = ["dep:pyo3", "std"]
+serde = ["dep:serde"]
 
 [dependencies]
 memchr = { version = "2", default-features = false }
-serde = { version = "1.0.145", features = ["derive"] }
+serde = { version = "1.0.145", features = ["derive"], optional = true }
 pyo3 = { version = "0.17.3", optional = true }
 
 [dev-dependencies]

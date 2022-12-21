@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::{ArcCursor, CursorError, BorrowedCursor};
+use crate::{ArcCursor, BorrowedCursor, CursorError};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -31,20 +31,14 @@ pub struct CachedMapCursor {
 }
 
 impl CachedMapCursor {
-    pub fn new(
-        cursor: ArcCursor,
-    ) -> Result<Self, CursorError> {
-        let children: HashMap<_, _> = cursor.raw_cursor
-                    .iter_map(cursor.range.clone(), cursor.scoped_buffer())?
-                    .flat_map(|kv| kv.ok())
-                    .map(|(key, range)| {
-                        (key.to_string(), range)
-                    })
-                    .collect();
-        Ok(CachedMapCursor {
-            cursor,
-            children,
-        })
+    pub fn new(cursor: ArcCursor) -> Result<Self, CursorError> {
+        let children: HashMap<_, _> = cursor
+            .raw_cursor
+            .iter_map(cursor.range.clone(), cursor.scoped_buffer())?
+            .flat_map(|kv| kv.ok())
+            .map(|(key, range)| (key.to_string(), range))
+            .collect();
+        Ok(CachedMapCursor { cursor, children })
     }
 
     /// Searches a map item by key, and return a cursor for that item.
@@ -59,7 +53,9 @@ impl CachedMapCursor {
         self.cursor.get_value_by_index(index)
     }
 
-    pub fn iter_borrowed<'a>(&'a self) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+    pub fn iter_borrowed<'a>(
+        &'a self,
+    ) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
         self.cursor.iter_borrowed()
     }
 }

@@ -30,9 +30,14 @@ mod cached_map_cursor;
 #[cfg(feature = "pyo3")]
 mod pyo3;
 
-pub use borrowed_cursor::BorrowedCursor;
+#[cfg(feature = "serde")]
+mod serde;
+
+#[cfg(feature = "serde")]
+pub use crate::serde::from_bytes;
 #[cfg(feature = "std")]
 pub use arc_cursor::ArcCursor;
+pub use borrowed_cursor::BorrowedCursor;
 #[cfg(feature = "std")]
 pub use cached_map_cursor::CachedMapCursor;
 

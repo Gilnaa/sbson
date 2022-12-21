@@ -69,6 +69,10 @@ impl<'a> BorrowedCursor<'a> {
         })
     }
 
+    pub fn get_key_by_index(&self, index: usize) -> Result<&'a str, CursorError> {
+        self.raw_cursor.get_key_by_index(self.buffer, index)
+    }
+
     /// Searches a map item by key, and return a cursor for that item.
     pub fn get_value_by_key(&self, key: &str) -> Result<BorrowedCursor<'a>, CursorError> {
         let (_index, cursor) = self.get_value_and_index_by_key(key)?;
@@ -156,18 +160,24 @@ impl<'a> BorrowedCursor<'a> {
         Ok(&self.buffer[ELEMENT_TYPE_SIZE..])
     }
 
-    pub fn iter_map(&'a self) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
-        Ok(self.raw_cursor
-                    .iter_map(0..self.buffer.len(), self.buffer)?
-                    .flat_map(|kv| kv.ok())
-                    .flat_map(|(key, range)| {
-                        BorrowedCursor::new(&self.buffer[range]).ok().map(|cursor| (key.to_string(), cursor))
-                    }))
+    pub fn iter_map(
+        &'a self,
+    ) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+        Ok(self
+            .raw_cursor
+            .iter_map(0..self.buffer.len(), self.buffer)?
+            .flat_map(|kv| kv.ok())
+            .flat_map(|(key, range)| {
+                BorrowedCursor::new(&self.buffer[range])
+                    .ok()
+                    .map(|cursor| (key.to_string(), cursor))
+            }))
     }
 
-    pub fn iter_array(&'a self) -> Result<impl Iterator<Item=BorrowedCursor<'a>>, CursorError> {
-        Ok(self.raw_cursor.iter_array(0..self.buffer.len(), self.buffer)?.flat_map(|range| {
-            BorrowedCursor::new(&self.buffer[range]).ok()
-        }))
+    pub fn iter_array(&'a self) -> Result<impl Iterator<Item = BorrowedCursor<'a>>, CursorError> {
+        Ok(self
+            .raw_cursor
+            .iter_array(0..self.buffer.len(), self.buffer)?
+            .flat_map(|range| BorrowedCursor::new(&self.buffer[range]).ok()))
     }
 }
