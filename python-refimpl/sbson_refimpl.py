@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
-import json
+import dataclasses
+import itertools
 import struct
 import typing
 from enum import IntEnum
+import phf
+
+
+PHF_THRESHOLD = 10_000
+
+@dataclasses.dataclass(frozen=True)
+class EncodeOptions:
+    # Determine how many elements a dict should have to trigger CHD generation,
+    # instead of the default binary tree.
+    phf_threshold: int = PHF_THRESHOLD
+
+
+DEFAULT_ENCODE_OPTIONS = EncodeOptions()
 
 
 class ElementType(IntEnum):
@@ -18,11 +32,12 @@ class ElementType(IntEnum):
     UINT32 = 0x11
     INT64 = 0x12
     UINT64 = 0x13
+    MAP_PHF_CHD = 0x20
 
 
-def encode(obj) -> bytes:
+def encode(obj, options: EncodeOptions = DEFAULT_ENCODE_OPTIONS) -> bytes:
     if isinstance(obj, dict):
-        payload = encode_map(obj)
+        payload = encode_map(obj, options=options)
     elif isinstance(obj, str):
         payload = struct.pack("B", ElementType.STRING) + obj.encode('utf-8') + b'\x00'
     elif isinstance(obj, bytes):
@@ -45,7 +60,7 @@ def encode(obj) -> bytes:
         payload = struct.pack("B", ElementType.NONE)
     # Must come after dict&str since they're also iterable.
     elif isinstance(obj, typing.Iterable):
-        payload = encode_array(obj)
+        payload = encode_array(obj, options=options)
     else:
         raise TypeError(f"Unexpected type {type(obj)} for value {obj}")
 
@@ -70,43 +85,112 @@ def decode(view: memoryview):
         return decode_array(view)
     elif element_type == ElementType.MAP:
         return decode_map(view)
+    elif element_type == ElementType.MAP_PHF_CHD:
+        return decode_map_chd(view)
     elif element_type == ElementType.BINARY:
         return bytes(view[1:])
     else:
         raise ValueError(f"Unknown element type {element_type}")
 
 
-def encode_map(obj: typing.Dict[str, typing.Any]) -> bytes:
+def _encode_map_chd(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> bytes:
+    map = phf.try_build_map(obj, 0x500)
+    field_values = [
+        encode(value, options=options)
+        for _field_name, value in map.key_values
+    ]
+    field_names: typing.List[bytes] = [
+        field_name.encode('utf-8') + b'\x00'
+        for field_name, _value in map.key_values
+    ]
+    keys = b''.join(field_names)
+    values = b''.join(field_values)
+
+    assert map is not None
+    # Headers. Size is always `1 + 4 + 4 + 8 * bucket_count`
+    # Bucket count = `(len(map) + 4) / 5`
+    header = struct.pack("<BII", int(ElementType.MAP_PHF_CHD), len(obj), map.seed) + \
+             struct.pack(f"<{len(map.disps) * 2}I", *itertools.chain(*map.disps))
+    
+    # Descriptors
+    descriptors = b''
+    descriptors_len = len(obj) * 8
+
+    keys_offset = len(header) + descriptors_len
+    values_offset = keys_offset + len(keys)
+    for name, value in zip(field_names, field_values):
+        descriptors += struct.pack('<2I', keys_offset, values_offset)
+        keys_offset += len(name)
+        values_offset += len(value)
+    
+    return header + descriptors + keys + values
+
+
+def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> bytes:
     assert isinstance(obj, dict)
     for field_name in obj.keys():
         assert isinstance(field_name, str)
         assert '\x00' not in field_name
     
+    if len(obj) >= options.phf_threshold:
+        print(f"Encoding a PHF with {len(obj)} items (>= {options.phf_threshold})")
+        return _encode_map_chd(obj, options=options)
+    
     # TODO: Ensure this sorts lexicographically and not anything smarter
     field_names = sorted(obj.keys())
     field_values = [
-        encode(obj[field_name])
+        encode(obj[field_name], options=options)
         for field_name in field_names
     ]
     field_names: typing.List[bytes] = [
         field_name.encode('utf-8') + b'\x00'
         for field_name in field_names
     ]
+    keys = b''.join(field_names)
+    values = b''.join(field_values)
 
     # Size of the element type, count field, and the descriptors
     header_size = 1 + 4 + (8 * len(field_names))
-    keys_size = sum(map(len, field_names))
     descriptors = b''
-    keys = b''.join(field_names)
-    values = b''.join(field_values)
     keys_offset = header_size
-    values_offset = header_size + keys_size
+    values_offset = header_size + len(keys)
     for name, value in zip(field_names, field_values):
         descriptors += struct.pack('<2I', keys_offset, values_offset)
         keys_offset += len(name)
         values_offset += len(value)
-    assert keys_offset == header_size + keys_size
+    assert keys_offset == header_size + len(keys)
     return struct.pack('<BI', int(ElementType.MAP), len(field_names)) + descriptors + keys + values
+
+
+def decode_map_chd(view: memoryview) -> dict:
+    """
+    Parses a CHD into a dict, discarding any CHD metadata.
+    """
+    _element_type, item_count, _seed, = struct.unpack_from("<BII", view)
+    bucket_count = (item_count + phf.LAMBDA - 1) // phf.LAMBDA
+    descriptor_offset = struct.calcsize(f"<BII{bucket_count}Q")
+
+    field_descriptors = []
+    descriptors = struct.unpack_from(f"<{2*item_count}I", view, descriptor_offset)
+    for idx in range(item_count):
+        keys_offset, values_offset = descriptors[idx*2:(idx + 1)*2]
+        if idx != item_count - 1:
+            next_key_offset = descriptors[(idx + 1) * 2]
+        else:
+            # Use first value offset
+            next_key_offset = descriptors[1]
+        name = view[keys_offset:next_key_offset]
+        if name[-1] != 0:
+            raise ValueError(f"Field {name} is not terminated.")
+        name = str(name, 'utf-8').strip('\0')
+        field_descriptors.append((values_offset, name))
+    field_descriptors.append((len(view), None))
+    output = {}
+    for (a_offset, a_name), (b_offset, _) in zip(field_descriptors[:-1], field_descriptors[1:]):
+        v = view[a_offset:b_offset]
+        o = decode(v)
+        output[a_name] = o
+    return output
 
 
 def decode_map(view: memoryview) -> dict:
@@ -135,15 +219,11 @@ def decode_map(view: memoryview) -> dict:
         o = decode(v)
         output[a_name] = o
 
-    # if len(field_descriptors) > 0:
-    #     last_field_offset, last_field_name = field_descriptors[-1]
-    #     output[last_field_name] = decode(view[last_field_offset:])
-
     return output
         
 
-def encode_array(itr: typing.Iterable) -> bytes:
-    values = [encode(value) for value in itr]
+def encode_array(itr: typing.Iterable, options: EncodeOptions) -> bytes:
+    values = [encode(value, options=options) for value in itr]
     count = len(values)
 
     # type(1B), count(4B), offset array

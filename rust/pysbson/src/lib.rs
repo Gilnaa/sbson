@@ -127,7 +127,7 @@ impl Cursor {
         };
 
         let value = match cursor.get_element_type() {
-            ElementTypeCode::Map | ElementTypeCode::Array => {
+            ElementTypeCode::Map | ElementTypeCode::Array | ElementTypeCode::MapCHD => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "Cannot get the value of a non-leaf node.",
                 ))
@@ -184,7 +184,7 @@ impl Cursor {
 
 fn pythonize(py: Python<'_>, cursor: BorrowedCursor<'_>) -> PyResult<PyObject> {
     let value = match cursor.get_element_type() {
-        ElementTypeCode::Map => cursor
+        ElementTypeCode::Map | ElementTypeCode::MapCHD => cursor
             .iter_map()?
             .flat_map(|(key, cursor)| pythonize(py, cursor).ok().map(|obj| (key, obj)))
             .into_py_dict(py)

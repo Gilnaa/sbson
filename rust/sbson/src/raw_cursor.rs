@@ -65,6 +65,28 @@ pub fn get_u32_quad_at_offset(
     Ok((a, b, c, d))
 }
 
+const fn calculate_bucket_count(child_count: u32) -> usize {
+    ((child_count + 4) / 5) as usize
+}
+
+const fn calculate_chd_descriptors_offset(child_count: u32) -> usize {
+    // From Python:
+    // ```python
+    // _element_type, item_count, _seed, = struct.unpack_from("<BII", view)
+    // bucket_count = (item_count + phf.LAMBDA - 1) // phf.LAMBDA
+    // descriptor_offset = struct.calcsize(f"<BII{bucket_count}Q")
+    // ```
+    let bucket_count = calculate_bucket_count(child_count);
+    // Element Type
+    ELEMENT_TYPE_SIZE +
+    // Child Count
+    U32_SIZE_BYTES +
+    // Seed
+    U32_SIZE_BYTES +
+    // CHD Displacements
+    U32_SIZE_BYTES * 2 * bucket_count
+}
+
 /// This cursor contains the functionality needed in order to traverse
 /// the document, but does not own, nor borrows the data.
 ///
@@ -102,7 +124,7 @@ impl RawCursor {
         let element_type = ElementTypeCode::try_from(*first)?;
 
         let child_count = match element_type {
-            ElementTypeCode::Map | ElementTypeCode::Array => get_u32_at_offset(buffer, 0)?,
+            ElementTypeCode::Map | ElementTypeCode::Array | ElementTypeCode::MapCHD => get_u32_at_offset(buffer, 0)?,
             _ => 0,
         };
         // TODO: Make sure we have at least a valid amount of bytes for headers (array/map descriptors, etc.)
@@ -119,9 +141,10 @@ impl RawCursor {
         buffer: &[u8],
         index: usize,
     ) -> Result<(Range<usize>, RawCursor), CursorError> {
-        let (descriptor_size, value_offset_within_header) = match self.element_type {
-            ElementTypeCode::Array => (ARRAY_DESCRIPTOR_SIZE, 0),
-            ElementTypeCode::Map => (MAP_DESCRIPTOR_SIZE, U32_SIZE_BYTES),
+        let (descriptors_offset, descriptor_size, value_offset_within_header) = match self.element_type {
+            ElementTypeCode::Array =>  (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 ARRAY_DESCRIPTOR_SIZE,  0),
+            ElementTypeCode::Map =>    (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
+            ElementTypeCode::MapCHD => (calculate_chd_descriptors_offset(self.child_count), MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
             _ => {
                 return Err(CursorError::WrongElementType {
                     actual: self.element_type,
@@ -134,16 +157,14 @@ impl RawCursor {
         }
 
         // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
-        let item_header_start = ELEMENT_TYPE_SIZE
-            + U32_SIZE_BYTES
+        let item_header_start = descriptors_offset
             + descriptor_size * index
             + value_offset_within_header;
         let item_offset_start = get_u32_at_offset(buffer, item_header_start)? as usize;
         let range = if index == self.child_count as usize - 1 {
             item_offset_start..buffer.len()
         } else {
-            let next_item_header_start = ELEMENT_TYPE_SIZE
-                + U32_SIZE_BYTES
+            let next_item_header_start = descriptors_offset
                 + descriptor_size * (index + 1)
                 + value_offset_within_header;
             let next_item_offset_start =
@@ -162,24 +183,31 @@ impl RawCursor {
         buffer: &'a [u8],
         index: usize,
     ) -> Result<&'a str, CursorError> {
-        self.ensure_element_type(ElementTypeCode::Map)?;
-
         if index >= self.child_count as usize {
             return Err(CursorError::ItemIndexOutOfBounds);
         }
 
+        let descriptors_offset = match self.element_type {
+            ElementTypeCode::Map =>    ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,
+            ElementTypeCode::MapCHD => calculate_chd_descriptors_offset(self.child_count),
+            _ => {
+                return Err(CursorError::WrongElementType {
+                    actual: self.element_type,
+                })
+            }
+        };
+
         // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
-        let item_header_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES + MAP_DESCRIPTOR_SIZE * index;
+        let item_header_start = descriptors_offset + MAP_DESCRIPTOR_SIZE * index;
         let key_offset_start = get_u32_at_offset(buffer, item_header_start)? as usize;
         let key_offset_end = if index == self.child_count as usize - 1 {
-            let first_item_header_payload_offset = ELEMENT_TYPE_SIZE
-                + U32_SIZE_BYTES // < Children count
+            let first_item_header_payload_offset = descriptors_offset
                 + U32_SIZE_BYTES; // < Second dword in header is the payload offset
 
             get_u32_at_offset(buffer, first_item_header_payload_offset)? as usize
         } else {
             let next_item_header_start =
-                ELEMENT_TYPE_SIZE + U32_SIZE_BYTES + MAP_DESCRIPTOR_SIZE * (index + 1);
+            descriptors_offset + MAP_DESCRIPTOR_SIZE * (index + 1);
 
             get_u32_at_offset(buffer, next_item_header_start)? as usize
         };
@@ -194,6 +222,25 @@ impl RawCursor {
         key_cstr.to_str().map_err(|_| CursorError::Utf8Error)
     }
 
+    fn get_value_and_index_by_key_chd(&self, buffer: &[u8], key: &str) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
+        let chd_seed_offset = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
+        let chd_displacement_start = chd_seed_offset + U32_SIZE_BYTES;
+        let seed = get_u32_at_offset(buffer, chd_seed_offset)? as u64;
+        let bucket_count = calculate_bucket_count(self.child_count);
+
+        let hashes = phf_shared::hash(key, &seed);
+        let bucket_offset = chd_displacement_start + (U32_SIZE_BYTES * 2) * (hashes.g as usize % bucket_count);
+        let (d1, d2) = get_u32_pair_at_offset(buffer, bucket_offset)?;
+        let index = phf_shared::displace(hashes.f1, hashes.f2, d1, d2) % self.child_count;
+        let index = index as usize;
+        let stored_key = self.get_key_by_index(buffer, index)?;
+        if key != stored_key {
+            Err(CursorError::KeyNotFound)
+        } else {
+            self.get_value_by_index(buffer, index).map(|(range, cursor)| (index, range, cursor))
+        }
+    }
+
     /// Searches a map item by key, and return the item's index and cursor.
     /// The index can be used with `get_value_by_index`, or saved into a path-vector.
     pub fn get_value_and_index_by_key(
@@ -201,6 +248,10 @@ impl RawCursor {
         buffer: &[u8],
         key: &str,
     ) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
+        if self.element_type == ElementTypeCode::MapCHD {
+            return self.get_value_and_index_by_key_chd(buffer, key);
+        }
+
         self.ensure_element_type(ElementTypeCode::Map)?;
         let key = key.as_bytes();
 

@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 use std::fmt::Debug;
 
 use crate::{BorrowedCursor, CursorError, ElementTypeCode};
@@ -67,6 +69,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
             crate::ElementTypeCode::UInt32 => todo!(),
             crate::ElementTypeCode::Int64 => visitor.visit_i64(self.cursor.parse_i64()?)?,
             crate::ElementTypeCode::UInt64 => todo!(),
+            crate::ElementTypeCode::MapCHD => todo!(),
         };
         Ok(f)
     }

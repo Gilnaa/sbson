@@ -56,6 +56,7 @@ pub enum ElementTypeCode {
     UInt32 = 0x11,
     Int64 = 0x12,
     UInt64 = 0x13,
+    MapCHD = 0x20,
 }
 
 impl TryFrom<u8> for ElementTypeCode {
@@ -73,6 +74,7 @@ impl TryFrom<u8> for ElementTypeCode {
             x if x == ElementTypeCode::None as u8 => ElementTypeCode::None,
             x if x == ElementTypeCode::Int32 as u8 => ElementTypeCode::Int32,
             x if x == ElementTypeCode::Int64 as u8 => ElementTypeCode::Int64,
+            x if x == ElementTypeCode::MapCHD as u8 => ElementTypeCode::MapCHD,
             x => return Err(CursorError::InvalidElementType(x)),
         })
     }
@@ -113,7 +115,8 @@ mod tests {
     ///     "help me i'm trapped in a format factory help me before they": '...'
     /// }
     /// ```
-    const DOC: &[u8] = b"\x03\x04\x00\x00\x00%\x00\x00\x00o\x00\x00\x00\'\x00\x00\x00y\x00\x00\x00-\x00\x00\x00\xa7\x00\x00\x003\x00\x00\x00\xbf\x00\x00\x003\x00BLARG\x00FLORP\x00help me i\'m trapped in a format factory help me before they\x00\x05beep boop\x04\x05\x00\x00\x00\x19\x00\x00\x00\"\x00\x00\x00+\x00\x00\x00,\x00\x00\x00-\x00\x00\x00\x12\x01\x00\x00\x00\x00\x00\x00\x00\x12\x02\x00\x00\x00\x00\x00\x00\x00\t\x08\n\x03\x01\x00\x00\x00\r\x00\x00\x00\x0f\x00\x00\x00X\x00\x12\xff\x00\x00\x00\x00\x00\x00\x00\x02...\x00";
+    const DOC: &[u8] = include_bytes!("../../../test_vectors/sanity.sbson");
+    const DOC_PHF: &[u8] = include_bytes!("../../../test_vectors/sanity_phf.sbson");
 
     #[test]
     fn it_works() {
@@ -161,6 +164,51 @@ mod tests {
     }
 
     #[test]
+    fn it_works_phf() {
+        let cur = BorrowedCursor::new(DOC_PHF).unwrap();
+        assert_eq!(cur.get_element_type(), ElementTypeCode::MapCHD);
+        assert_eq!(cur.get_children_count(), 4);
+
+        // Should be the same because "3" is the first key, lexicographically.
+        let three_by_name = cur.get_value_by_key("3".into()).unwrap();
+        // let three_by_index = cur.get_value_by_index(0).unwrap();
+        assert_eq!(three_by_name.parse_binary(), Ok(&b"beep boop"[..]));
+        // assert_eq!(three_by_index.parse_binary(), Ok(&b"beep boop"[..]));
+
+        // Query ".BLARG[0]"
+        let blarg_0 = cur
+            .get_value_by_key("BLARG")
+            .unwrap()
+            .get_value_by_index(0)
+            .unwrap();
+        assert_eq!(blarg_0.parse_i64(), Ok(1));
+
+        // Query ".BLARG[1]", but drop the intermediary cursor
+        // to make sure we can in theory always keep one cursor.
+        let blarg_1 = {
+            let b = cur.get_value_by_key("BLARG").unwrap();
+            b.get_value_by_index(1).unwrap()
+        };
+        assert_eq!(blarg_1.parse_i64(), Ok(2));
+
+        // Query ".FLORP.X"
+        let florp_x = cur
+            .get_value_by_key("FLORP")
+            .unwrap()
+            .get_value_by_key("X")
+            .unwrap();
+        assert_eq!(florp_x.parse_i64(), Ok(0xFF));
+
+        let blarg = cur.get_value_by_key("BLARG").unwrap();
+        assert_eq!(blarg.get_value_by_index(2).unwrap().parse_bool(), Ok(true));
+        assert_eq!(blarg.get_value_by_index(3).unwrap().parse_bool(), Ok(false));
+        assert_eq!(blarg.get_value_by_index(4).unwrap().parse_none(), Ok(()));
+
+        // Query the last parameter
+        // assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
+    }
+
+    #[test]
     fn it_works_arc() {
         let cur = ArcCursor::new(DOC).unwrap();
         assert_eq!(cur.get_element_type(), ElementTypeCode::Map);
@@ -203,5 +251,18 @@ mod tests {
 
         // Query the last parameter
         assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
+    }
+
+    /// Make sure our hand-rolled Python implementation matches that of `phf_shared`. (External crate)
+    /// ```python
+    /// In [2]: phf.Hashes('florp_blarg', 0xaabbccdd)
+    /// Out[2]: Hashes(g=3120106014, f1=1555086281, f2=999888330)
+    /// ```
+    #[test]
+    fn phf_hash_matches() {
+        let hashes = phf_shared::hash("florp_blarg", &0xaabbccdd);
+        assert_eq!(hashes.g, 3120106014);
+        assert_eq!(hashes.f1, 1555086281);
+        assert_eq!(hashes.f2, 999888330);
     }
 }

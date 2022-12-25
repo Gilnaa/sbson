@@ -16,12 +16,14 @@ def generate_test_vectors():
     }
 
     vectors = {
-        "sanity": sanity,
-        "goto": goto,
+        "sanity":(sanity, DEFAULT_ENCODE_OPTIONS),
+        "sanity_phf":(sanity, EncodeOptions(phf_threshold=0)),
+        "goto":(goto, DEFAULT_ENCODE_OPTIONS),
+        "goto_phf":(goto, EncodeOptions(phf_threshold=8000)),
     }
-    for name, vector in vectors.items():
+    for name, (vector, options) in vectors.items():
         print(f"Encoding {name}")
-        sbson = encode(vector)
+        sbson = encode(vector, options=options)
         print(f"Decoding {name}")
         assert decode(sbson) == vector
         print(f"Saving {name}.sbson")
