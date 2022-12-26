@@ -15,6 +15,8 @@ class EncodeOptions:
     # instead of the default binary tree.
     phf_threshold: int = PHF_THRESHOLD
 
+    use_eytzinger: bool = False
+
 
 DEFAULT_ENCODE_OPTIONS = EncodeOptions()
 
@@ -33,6 +35,7 @@ class ElementType(IntEnum):
     INT64 = 0x12
     UINT64 = 0x13
     MAP_PHF_CHD = 0x20
+    MAP_EYTZINGER = 0x21
 
 
 def encode(obj, options: EncodeOptions = DEFAULT_ENCODE_OPTIONS) -> bytes:
@@ -83,7 +86,7 @@ def decode(view: memoryview):
         return str(view[1:], 'utf-8').rstrip('\x00')
     elif element_type == ElementType.ARRAY:
         return decode_array(view)
-    elif element_type == ElementType.MAP:
+    elif element_type == ElementType.MAP or element_type == ElementType.MAP_EYTZINGER:
         return decode_map(view)
     elif element_type == ElementType.MAP_PHF_CHD:
         return decode_map_chd(view)
@@ -126,6 +129,23 @@ def _encode_map_chd(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -
     return header + descriptors + keys + values
 
 
+def _sort_eytzinger(kvs: list[str]):
+    new_arr = [None] * (len(kvs) + 1)
+    kvs.sort()
+    i = 0
+
+    def _inner(k=1):
+        nonlocal i
+        if k <= len(kvs):
+            _inner(2 * k)
+            new_arr[k] = kvs[i]
+            i += 1
+            _inner(2 * k + 1)
+
+    _inner()
+    return new_arr
+
+
 def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> bytes:
     assert isinstance(obj, dict)
     for field_name in obj.keys():
@@ -135,9 +155,19 @@ def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> byt
     if len(obj) >= options.phf_threshold:
         print(f"Encoding a PHF with {len(obj)} items (>= {options.phf_threshold})")
         return _encode_map_chd(obj, options=options)
-    
-    # TODO: Ensure this sorts lexicographically and not anything smarter
-    field_names = sorted(obj.keys())
+
+    if options.use_eytzinger:
+        element_type = ElementType.MAP_EYTZINGER
+        field_names = _sort_eytzinger(list(obj.keys()))[1:]
+        if 'item_0000' in field_names:
+            print(field_names)
+            print('item_0000',field_names.index('item_0000') + 1)
+        if 'item_7999' in field_names:
+            print('item_7999',field_names.index('item_7999') + 1)
+    else:
+        # TODO: Ensure this sorts lexicographically and not anything smarter
+        element_type = ElementType.MAP
+        field_names = sorted(obj.keys())
     field_values = [
         encode(obj[field_name], options=options)
         for field_name in field_names
@@ -159,7 +189,7 @@ def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> byt
         keys_offset += len(name)
         values_offset += len(value)
     assert keys_offset == header_size + len(keys)
-    return struct.pack('<BI', int(ElementType.MAP), len(field_names)) + descriptors + keys + values
+    return struct.pack('<BI', int(element_type), len(field_names)) + descriptors + keys + values
 
 
 def decode_map_chd(view: memoryview) -> dict:

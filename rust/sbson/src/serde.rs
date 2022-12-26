@@ -70,6 +70,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
             crate::ElementTypeCode::Int64 => visitor.visit_i64(self.cursor.get_i64()?)?,
             crate::ElementTypeCode::UInt64 => todo!(),
             crate::ElementTypeCode::MapCHD => todo!(),
+            crate::ElementTypeCode::MapEytzinger => todo!(),
         };
         Ok(f)
     }

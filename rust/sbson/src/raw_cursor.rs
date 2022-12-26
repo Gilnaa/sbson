@@ -124,7 +124,10 @@ impl RawCursor {
         let element_type = ElementTypeCode::try_from(*first)?;
 
         let child_count = match element_type {
-            ElementTypeCode::Map | ElementTypeCode::Array | ElementTypeCode::MapCHD => get_u32_at_offset(buffer, 0)?,
+            | ElementTypeCode::Map
+            | ElementTypeCode::Array
+            | ElementTypeCode::MapCHD
+            | ElementTypeCode::MapEytzinger => get_u32_at_offset(buffer, 0)?,
             _ => 0,
         };
         // TODO: Make sure we have at least a valid amount of bytes for headers (array/map descriptors, etc.)
@@ -142,9 +145,10 @@ impl RawCursor {
         index: usize,
     ) -> Result<(Range<usize>, RawCursor), CursorError> {
         let (descriptors_offset, descriptor_size, value_offset_within_header) = match self.element_type {
-            ElementTypeCode::Array =>  (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 ARRAY_DESCRIPTOR_SIZE,  0),
-            ElementTypeCode::Map =>    (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
-            ElementTypeCode::MapCHD => (calculate_chd_descriptors_offset(self.child_count), MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
+            ElementTypeCode::Array =>           (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 ARRAY_DESCRIPTOR_SIZE,  0),
+            ElementTypeCode::Map =>             (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
+            ElementTypeCode::MapEytzinger =>    (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
+            ElementTypeCode::MapCHD =>          (calculate_chd_descriptors_offset(self.child_count), MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
             _ => {
                 return Err(CursorError::WrongElementType {
                     actual: self.element_type,
@@ -241,6 +245,70 @@ impl RawCursor {
         }
     }
 
+    fn get_value_and_index_by_key_eytzinger(&self, buffer: &[u8], key: &str) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
+        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
+        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
+        
+        let descriptors = buffer
+            .get((descriptor_start)..descriptor_end)
+            .ok_or(CursorError::DocumentTooShort)?;
+
+        // Eytzinger scheme uses 1-based indicies. We decrease 1 just before indexing
+        let key = key.as_bytes();
+        let mut index = 1;
+
+        while index <= self.child_count {
+            let (current_key, value_range) = if (index - 1) == self.child_count - 1 {
+                // PANIC-SAFETY: Index calculation is bound not user dependent.
+                let (key_offset, value_offset) =
+                    get_u32_pair_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * (index - 1) as usize).unwrap();
+                let key_offset = key_offset as usize;
+
+                let key_slice = buffer
+                    .get(key_offset..)
+                    .ok_or(CursorError::UnterminatedString)?;
+                let null_terminator =
+                    memchr::memchr(0, key_slice).ok_or(CursorError::UnterminatedString)?;
+
+                (
+                    // PANIC-SAFETY: `null_terminator` was found after `key_offset` in the buffer, so they're both in range.
+                    &buffer[key_offset..key_offset + null_terminator],
+                    value_offset as usize..buffer.len(),
+                )
+            } else {
+                // PANIC-SAFETY: Index calculation is bound not user dependent.
+                //               Specifically since this is not the last descriptor, we know to have at least 128bits available.
+                let (key_offset, value_offset, next_key_offset, next_value_offset) =
+                    get_u32_quad_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * (index - 1) as usize).unwrap();
+                let key_offset = key_offset as usize;
+                let next_key_offset = next_key_offset as usize;
+                // We must check the offset here as its payload-provided and unverified.
+                let current_key = buffer
+                    .get(key_offset..next_key_offset as usize - 1)
+                    .ok_or(CursorError::EmbeddedOffsetOutOfBounds)?;
+
+                (
+                    current_key,
+                    value_offset as usize..next_value_offset as usize,
+                )
+            };
+            //-----//
+
+            match key.cmp(current_key) {
+                std::cmp::Ordering::Less => index = index * 2,
+                std::cmp::Ordering::Greater => index = index * 2 + 1,
+                std::cmp::Ordering::Equal => {
+                    let buffer = buffer
+                        .get(value_range.clone())
+                        .ok_or(CursorError::DocumentTooShort)?;
+                    return RawCursor::new(buffer).map(|cursor| ((index - 1) as usize, value_range, cursor));
+                }
+            }
+        }
+
+        Err(CursorError::KeyNotFound)
+    }
+
     /// Searches a map item by key, and return the item's index and cursor.
     /// The index can be used with `get_value_by_index`, or saved into a path-vector.
     pub fn get_value_and_index_by_key(
@@ -250,6 +318,8 @@ impl RawCursor {
     ) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
         if self.element_type == ElementTypeCode::MapCHD {
             return self.get_value_and_index_by_key_chd(buffer, key);
+        } else if self.element_type == ElementTypeCode::MapEytzinger {
+            return self.get_value_and_index_by_key_eytzinger(buffer, key);
         }
 
         self.ensure_element_type(ElementTypeCode::Map)?;

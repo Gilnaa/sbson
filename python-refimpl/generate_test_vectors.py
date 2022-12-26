@@ -20,6 +20,7 @@ def generate_test_vectors():
         "sanity_phf":(sanity, EncodeOptions(phf_threshold=0)),
         "goto":(goto, DEFAULT_ENCODE_OPTIONS),
         "goto_phf":(goto, EncodeOptions(phf_threshold=8000)),
+        "goto_eytzinger":(goto, EncodeOptions(use_eytzinger=True)),
     }
     for name, (vector, options) in vectors.items():
         print(f"Encoding {name}")
