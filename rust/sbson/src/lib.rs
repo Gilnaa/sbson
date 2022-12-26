@@ -20,26 +20,23 @@
 
 extern crate core;
 
-mod borrowed_cursor;
 mod raw_cursor;
 
-#[cfg(feature = "std")]
-mod arc_cursor;
-#[cfg(feature = "std")]
-mod cached_map_cursor;
+// #[cfg(feature = "std")]
+// mod cached_map_cursor;
+
 #[cfg(feature = "pyo3")]
 mod pyo3;
-
+mod cursor;
+pub use cursor::Cursor;
 #[cfg(feature = "serde")]
 mod serde;
 
 #[cfg(feature = "serde")]
 pub use crate::serde::from_bytes;
-#[cfg(feature = "std")]
-pub use arc_cursor::ArcCursor;
-pub use borrowed_cursor::BorrowedCursor;
-#[cfg(feature = "std")]
-pub use cached_map_cursor::CachedMapCursor;
+
+// #[cfg(feature = "std")]
+// pub use cached_map_cursor::CachedMapCursor;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -120,15 +117,15 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let cur = BorrowedCursor::new(DOC).unwrap();
+        let cur = Cursor::new(DOC).unwrap();
         assert_eq!(cur.get_element_type(), ElementTypeCode::Map);
         assert_eq!(cur.get_children_count(), 4);
 
         // Should be the same because "3" is the first key, lexicographically.
         let three_by_name = cur.get_value_by_key("3".into()).unwrap();
         let three_by_index = cur.get_value_by_index(0).unwrap();
-        assert_eq!(three_by_name.parse_binary(), Ok(&b"beep boop"[..]));
-        assert_eq!(three_by_index.parse_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_name.get_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_index.get_binary(), Ok(&b"beep boop"[..]));
 
         // Query ".BLARG[0]"
         let blarg_0 = cur
@@ -136,7 +133,7 @@ mod tests {
             .unwrap()
             .get_value_by_index(0)
             .unwrap();
-        assert_eq!(blarg_0.parse_i64(), Ok(1));
+        assert_eq!(blarg_0.get_i64(), Ok(1));
 
         // Query ".BLARG[1]", but drop the intermediary cursor
         // to make sure we can in theory always keep one cursor.
@@ -144,7 +141,7 @@ mod tests {
             let b = cur.get_value_by_key("BLARG").unwrap();
             b.get_value_by_index(1).unwrap()
         };
-        assert_eq!(blarg_1.parse_i64(), Ok(2));
+        assert_eq!(blarg_1.get_i64(), Ok(2));
 
         // Query ".FLORP.X"
         let florp_x = cur
@@ -152,28 +149,28 @@ mod tests {
             .unwrap()
             .get_value_by_key("X")
             .unwrap();
-        assert_eq!(florp_x.parse_i64(), Ok(0xFF));
+        assert_eq!(florp_x.get_i64(), Ok(0xFF));
 
         let blarg = cur.get_value_by_key("BLARG").unwrap();
-        assert_eq!(blarg.get_value_by_index(2).unwrap().parse_bool(), Ok(true));
-        assert_eq!(blarg.get_value_by_index(3).unwrap().parse_bool(), Ok(false));
-        assert_eq!(blarg.get_value_by_index(4).unwrap().parse_none(), Ok(()));
+        assert_eq!(blarg.get_value_by_index(2).unwrap().get_bool(), Ok(true));
+        assert_eq!(blarg.get_value_by_index(3).unwrap().get_bool(), Ok(false));
+        assert_eq!(blarg.get_value_by_index(4).unwrap().get_none(), Ok(()));
 
         // Query the last parameter
-        assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
+        assert_eq!(cur.get_value_by_index(3).unwrap().get_str(), Ok("..."));
     }
 
     #[test]
     fn it_works_phf() {
-        let cur = BorrowedCursor::new(DOC_PHF).unwrap();
+        let cur = Cursor::new(DOC_PHF).unwrap();
         assert_eq!(cur.get_element_type(), ElementTypeCode::MapCHD);
         assert_eq!(cur.get_children_count(), 4);
 
         // Should be the same because "3" is the first key, lexicographically.
         let three_by_name = cur.get_value_by_key("3".into()).unwrap();
         // let three_by_index = cur.get_value_by_index(0).unwrap();
-        assert_eq!(three_by_name.parse_binary(), Ok(&b"beep boop"[..]));
-        // assert_eq!(three_by_index.parse_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_name.get_binary(), Ok(&b"beep boop"[..]));
+        // assert_eq!(three_by_index.get_binary(), Ok(&b"beep boop"[..]));
 
         // Query ".BLARG[0]"
         let blarg_0 = cur
@@ -181,7 +178,7 @@ mod tests {
             .unwrap()
             .get_value_by_index(0)
             .unwrap();
-        assert_eq!(blarg_0.parse_i64(), Ok(1));
+        assert_eq!(blarg_0.get_i64(), Ok(1));
 
         // Query ".BLARG[1]", but drop the intermediary cursor
         // to make sure we can in theory always keep one cursor.
@@ -189,7 +186,7 @@ mod tests {
             let b = cur.get_value_by_key("BLARG").unwrap();
             b.get_value_by_index(1).unwrap()
         };
-        assert_eq!(blarg_1.parse_i64(), Ok(2));
+        assert_eq!(blarg_1.get_i64(), Ok(2));
 
         // Query ".FLORP.X"
         let florp_x = cur
@@ -197,28 +194,29 @@ mod tests {
             .unwrap()
             .get_value_by_key("X")
             .unwrap();
-        assert_eq!(florp_x.parse_i64(), Ok(0xFF));
+        assert_eq!(florp_x.get_i64(), Ok(0xFF));
 
         let blarg = cur.get_value_by_key("BLARG").unwrap();
-        assert_eq!(blarg.get_value_by_index(2).unwrap().parse_bool(), Ok(true));
-        assert_eq!(blarg.get_value_by_index(3).unwrap().parse_bool(), Ok(false));
-        assert_eq!(blarg.get_value_by_index(4).unwrap().parse_none(), Ok(()));
+        assert_eq!(blarg.get_value_by_index(2).unwrap().get_bool(), Ok(true));
+        assert_eq!(blarg.get_value_by_index(3).unwrap().get_bool(), Ok(false));
+        assert_eq!(blarg.get_value_by_index(4).unwrap().get_none(), Ok(()));
 
         // Query the last parameter
-        // assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
+        // assert_eq!(cur.get_value_by_index(3).unwrap().get_str(), Ok("..."));
     }
 
     #[test]
     fn it_works_arc() {
-        let cur = ArcCursor::new(DOC).unwrap();
+        use std::sync::Arc;
+        let cur: Cursor<Arc<[u8]>> = Cursor::new(DOC.into()).unwrap();
         assert_eq!(cur.get_element_type(), ElementTypeCode::Map);
         assert_eq!(cur.get_children_count(), 4);
 
         // Should be the same because "3" is the first key, lexicographically.
         let three_by_name = cur.get_value_by_key("3".into()).unwrap();
         let three_by_index = cur.get_value_by_index(0).unwrap();
-        assert_eq!(three_by_name.parse_binary(), Ok(&b"beep boop"[..]));
-        assert_eq!(three_by_index.parse_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_name.get_binary(), Ok(&b"beep boop"[..]));
+        assert_eq!(three_by_index.get_binary(), Ok(&b"beep boop"[..]));
 
         // Query ".BLARG[0]"
         let blarg_0 = cur
@@ -226,7 +224,7 @@ mod tests {
             .unwrap()
             .get_value_by_index(0)
             .unwrap();
-        assert_eq!(blarg_0.parse_i64(), Ok(1));
+        assert_eq!(blarg_0.get_i64(), Ok(1));
 
         // Query ".BLARG[1]", but drop the intermediary cursor
         // to make sure we can in theory always keep one cursor.
@@ -234,7 +232,7 @@ mod tests {
             let b = cur.get_value_by_key("BLARG").unwrap();
             b.get_value_by_index(1).unwrap()
         };
-        assert_eq!(blarg_1.parse_i64(), Ok(2));
+        assert_eq!(blarg_1.get_i64(), Ok(2));
 
         // Query ".FLORP.X"
         let florp_x = cur
@@ -242,15 +240,15 @@ mod tests {
             .unwrap()
             .get_value_by_key("X")
             .unwrap();
-        assert_eq!(florp_x.parse_i64(), Ok(0xFF));
+        assert_eq!(florp_x.get_i64(), Ok(0xFF));
 
         let blarg = cur.get_value_by_key("BLARG").unwrap();
-        assert_eq!(blarg.get_value_by_index(2).unwrap().parse_bool(), Ok(true));
-        assert_eq!(blarg.get_value_by_index(3).unwrap().parse_bool(), Ok(false));
-        assert_eq!(blarg.get_value_by_index(4).unwrap().parse_none(), Ok(()));
+        assert_eq!(blarg.get_value_by_index(2).unwrap().get_bool(), Ok(true));
+        assert_eq!(blarg.get_value_by_index(3).unwrap().get_bool(), Ok(false));
+        assert_eq!(blarg.get_value_by_index(4).unwrap().get_none(), Ok(()));
 
         // Query the last parameter
-        assert_eq!(cur.get_value_by_index(3).unwrap().parse_str(), Ok("..."));
+        assert_eq!(cur.get_value_by_index(3).unwrap().get_str(), Ok("..."));
     }
 
     /// Make sure our hand-rolled Python implementation matches that of `phf_shared`. (External crate)

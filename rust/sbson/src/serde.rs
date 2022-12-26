@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use crate::{BorrowedCursor, CursorError, ElementTypeCode};
+use crate::{Cursor, CursorError, ElementTypeCode};
 use serde::{
     de::{value::StrDeserializer, MapAccess, SeqAccess, Visitor},
     Deserialize,
@@ -21,13 +21,13 @@ where
 }
 
 pub struct Deserializer<'de> {
-    cursor: BorrowedCursor<'de>,
+    cursor: Cursor<&'de [u8]>,
 }
 
 impl<'de> Deserializer<'de> {
     pub fn from_bytes(input: &'de [u8]) -> Result<Self> {
         Ok(Self {
-            cursor: BorrowedCursor::new(input)?,
+            cursor: Cursor::new(input)?,
         })
     }
 }
@@ -58,16 +58,16 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
     {
         let f = match self.cursor.get_element_type() {
             crate::ElementTypeCode::Double => todo!(),
-            crate::ElementTypeCode::String => visitor.visit_str(self.cursor.parse_str()?)?,
+            crate::ElementTypeCode::String => visitor.visit_str(self.cursor.get_str()?)?,
             crate::ElementTypeCode::Map => todo!(),
             crate::ElementTypeCode::Array => todo!(),
-            crate::ElementTypeCode::Binary => visitor.visit_bytes(self.cursor.parse_binary()?)?,
+            crate::ElementTypeCode::Binary => visitor.visit_bytes(self.cursor.get_binary()?)?,
             crate::ElementTypeCode::False => visitor.visit_bool(false)?,
             crate::ElementTypeCode::True => visitor.visit_bool(true)?,
             crate::ElementTypeCode::None => visitor.visit_none()?,
-            crate::ElementTypeCode::Int32 => visitor.visit_i32(self.cursor.parse_i32()?)?,
+            crate::ElementTypeCode::Int32 => visitor.visit_i32(self.cursor.get_i32()?)?,
             crate::ElementTypeCode::UInt32 => todo!(),
-            crate::ElementTypeCode::Int64 => visitor.visit_i64(self.cursor.parse_i64()?)?,
+            crate::ElementTypeCode::Int64 => visitor.visit_i64(self.cursor.get_i64()?)?,
             crate::ElementTypeCode::UInt64 => todo!(),
             crate::ElementTypeCode::MapCHD => todo!(),
         };
@@ -78,21 +78,21 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_bool(self.cursor.parse_bool()?)
+        visitor.visit_bool(self.cursor.get_bool()?)
     }
 
     fn deserialize_i32<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i32(self.cursor.parse_i32()?)
+        visitor.visit_i32(self.cursor.get_i32()?)
     }
 
     fn deserialize_i64<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_i64(self.cursor.parse_i64()?)
+        visitor.visit_i64(self.cursor.get_i64()?)
     }
 
     // Refer to the "Understanding deserializer lifetimes" page for information
@@ -101,14 +101,14 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_str(self.cursor.parse_str()?)
+        visitor.visit_borrowed_str(self.cursor.get_storage_str()?)
     }
 
     fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_borrowed_str(self.cursor.parse_str()?)
+        visitor.visit_borrowed_str(self.cursor.get_storage_str()?)
     }
 
     // The `Serializer` implementation on the previous page serialized byte
@@ -117,7 +117,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: Visitor<'de>,
     {
-        visitor.visit_bytes(self.cursor.parse_binary()?)
+        visitor.visit_bytes(self.cursor.get_binary()?)
     }
 
     fn deserialize_seq<V>(mut self, visitor: V) -> Result<V::Value>

@@ -93,7 +93,7 @@ const fn calculate_chd_descriptors_offset(child_count: u32) -> usize {
 /// This is a private implementation detail and should not be exposed to the
 /// users of this crate.
 #[derive(Debug, Clone)]
-pub struct RawCursor {
+pub(crate) struct RawCursor {
     pub element_type: ElementTypeCode,
     pub child_count: u32,
 }

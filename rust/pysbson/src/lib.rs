@@ -1,12 +1,14 @@
+use std::sync::Arc;
+
 use pyo3::{
     prelude::*,
     types::{IntoPyDict, PyList},
 };
-use sbson::{BorrowedCursor, CursorError, ElementTypeCode};
+use sbson::{Cursor, CursorError, ElementTypeCode};
 
 enum CursorImpl {
-    Generic(sbson::ArcCursor),
-    CachedMap(sbson::CachedMapCursor),
+    Generic(sbson::Cursor<Arc<[u8]>>),
+    // CachedMap(sbson::CachedMapCursor),
 }
 
 #[derive(Debug, Clone, FromPyObject)]
@@ -15,18 +17,18 @@ enum PathSegment {
     Index(usize),
 }
 
-#[pyclass]
-struct Cursor {
+#[pyclass(name = "Cursor")]
+struct PyCursor {
     path_segments: Vec<PathSegment>,
     cursor_impl: CursorImpl,
 }
 
 #[pymethods]
-impl Cursor {
+impl PyCursor {
     #[new]
-    fn new(data: &[u8]) -> PyResult<Self> {
-        let cursor = sbson::ArcCursor::new(data)?;
-        Ok(Cursor {
+    fn new(data: Vec<u8>) -> PyResult<Self> {
+        let cursor = sbson::Cursor::new(data.into())?;
+        Ok(PyCursor {
             path_segments: vec![],
             cursor_impl: CursorImpl::Generic(cursor),
         })
@@ -35,8 +37,8 @@ impl Cursor {
     #[staticmethod]
     fn new_from_file(file_name: &str) -> PyResult<Self> {
         let data = std::fs::read(file_name)?;
-        let cursor = sbson::ArcCursor::new(data)?;
-        Ok(Cursor {
+        let cursor = Cursor::new(data.into())?;
+        Ok(PyCursor {
             path_segments: vec![],
             cursor_impl: CursorImpl::Generic(cursor),
         })
@@ -44,19 +46,19 @@ impl Cursor {
 
     fn __len__(&self, _py: Python<'_>) -> usize {
         match &self.cursor_impl {
-            CursorImpl::CachedMap(cursor) => cursor.children.len(),
+            // CursorImpl::CachedMap(cursor) => cursor.children.len(),
             CursorImpl::Generic(cursor) => cursor.get_children_count(),
         }
     }
 
     fn __getattr__(&self, _py: Python<'_>, attr: &str) -> PyResult<Self> {
         let cursor = match &self.cursor_impl {
-            CursorImpl::CachedMap(cursor) => cursor.get_value_by_key(attr)?,
+            // CursorImpl::CachedMap(cursor) => cursor.get_value_by_key(attr)?,
             CursorImpl::Generic(cursor) => cursor.get_value_by_key(attr)?,
         };
         let mut path_segments = self.path_segments.clone();
         path_segments.push(PathSegment::Key(attr.into()));
-        let cursor = Cursor {
+        let cursor = PyCursor {
             path_segments: path_segments,
             cursor_impl: CursorImpl::Generic(cursor),
         };
@@ -65,22 +67,22 @@ impl Cursor {
 
     fn __getitem__<'a>(&'a self, index: PathSegment) -> PyResult<Self> {
         let cursor = match (&index, &self.cursor_impl) {
-            (PathSegment::Index(_), CursorImpl::CachedMap(_)) => {
-                return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                    "Whoopsie Doopsie",
-                ))
-            }
+            // (PathSegment::Index(_), CursorImpl::CachedMap(_)) => {
+            //     return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            //         "Whoopsie Doopsie",
+            //     ))
+            // }
             (PathSegment::Index(index), CursorImpl::Generic(cursor)) => {
                 cursor.get_value_by_index(*index)?
             }
-            (PathSegment::Key(key), CursorImpl::CachedMap(cursor)) => {
-                cursor.get_value_by_key(key)?
-            }
+            // (PathSegment::Key(key), CursorImpl::CachedMap(cursor)) => {
+            //     cursor.get_value_by_key(key)?
+            // }
             (PathSegment::Key(key), CursorImpl::Generic(cursor)) => cursor.get_value_by_key(key)?,
         };
         let mut path_segments = self.path_segments.clone();
         path_segments.push(index);
-        let cursor = Cursor {
+        let cursor = PyCursor {
             path_segments: path_segments,
             cursor_impl: CursorImpl::Generic(cursor),
         };
@@ -89,7 +91,7 @@ impl Cursor {
 
     fn __repr__(&self) -> String {
         let node_type = match &self.cursor_impl {
-            CursorImpl::CachedMap(_) => ElementTypeCode::Map,
+            // CursorImpl::CachedMap(_) => ElementTypeCode::Map,
             CursorImpl::Generic(cursor) => cursor.get_element_type(),
         };
         let path = self
@@ -104,25 +106,25 @@ impl Cursor {
         format!("<Cursor {{{node_type:?}}} @ /{path}>")
     }
 
-    /// Given a map node, caches key descriptor into hash-map internally
-    /// in order to reduce indexing from O(log N) to O(1).;
-    fn cache_map(&mut self) -> PyResult<()> {
-        let map = match &self.cursor_impl {
-            CursorImpl::CachedMap(_) => return Ok(()),
-            CursorImpl::Generic(generic) => generic.cache_map()?,
-        };
-        self.cursor_impl = CursorImpl::CachedMap(map);
-        Ok(())
-    }
+    // /// Given a map node, caches key descriptor into hash-map internally
+    // /// in order to reduce indexing from O(log N) to O(1).;
+    // fn cache_map(&mut self) -> PyResult<()> {
+    //     let map = match &self.cursor_impl {
+    //         CursorImpl::CachedMap(_) => return Ok(()),
+    //         CursorImpl::Generic(generic) => generic.cache_map()?,
+    //     };
+    //     self.cursor_impl = CursorImpl::CachedMap(map);
+    //     Ok(())
+    // }
 
     #[getter]
     fn value(&self, py: Python<'_>) -> PyResult<PyObject> {
         let cursor = match &self.cursor_impl {
-            CursorImpl::CachedMap(_) => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    "Cannot get the value of a non-leaf node.",
-                ))
-            }
+            // CursorImpl::CachedMap(_) => {
+            //     return Err(pyo3::exceptions::PyTypeError::new_err(
+            //         "Cannot get the value of a non-leaf node.",
+            //     ))
+            // }
             CursorImpl::Generic(g) => g,
         };
 
@@ -132,12 +134,12 @@ impl Cursor {
                     "Cannot get the value of a non-leaf node.",
                 ))
             }
-            ElementTypeCode::String => cursor.parse_str()?.into_py(py),
+            ElementTypeCode::String => cursor.get_str()?.into_py(py),
             ElementTypeCode::None => py.None(),
             ElementTypeCode::True => true.into_py(py),
             ElementTypeCode::False => false.into_py(py),
-            ElementTypeCode::Int32 => cursor.parse_i32()?.into_py(py),
-            ElementTypeCode::Int64 => cursor.parse_i64()?.into_py(py),
+            ElementTypeCode::Int32 => cursor.get_i32()?.into_py(py),
+            ElementTypeCode::Int64 => cursor.get_i64()?.into_py(py),
             ElementTypeCode::UInt32 => unimplemented!(),
             ElementTypeCode::UInt64 => unimplemented!(),
             ElementTypeCode::Double => unimplemented!(),
@@ -164,25 +166,24 @@ impl Cursor {
         // since we're going to iterate the elements by order.
         let cursor = match &self.cursor_impl {
             CursorImpl::Generic(g) => g,
-            CursorImpl::CachedMap(cache) => &cache.cursor,
+            // CursorImpl::CachedMap(cache) => &cache.cursor,
         };
         pythonize(py, cursor.borrow())
     }
 
-    // TODO: Return Vec<CStr>/Vec<PyStr> to avoid double-allocation per key (second copy happens when moving key to python)
-    fn keys(&self) -> Result<Vec<String>, CursorError> {
+    fn keys(&self) -> Result<Vec<&str>, CursorError> {
         let v = match &self.cursor_impl {
             CursorImpl::Generic(g) => match g.get_element_type() {
-                ElementTypeCode::Map => g.borrow().iter_map()?.map(|(key, _cursor)| key).collect(),
+                ElementTypeCode::Map => g.iter_map()?.map(|(key, _cursor)| key).collect(),
                 _ => vec![],
             },
-            CursorImpl::CachedMap(cache) => cache.children.keys().cloned().collect(),
+            // CursorImpl::CachedMap(cache) => cache.children.keys().cloned().collect(),
         };
         Ok(v)
     }
 }
 
-fn pythonize(py: Python<'_>, cursor: BorrowedCursor<'_>) -> PyResult<PyObject> {
+fn pythonize(py: Python<'_>, cursor: Cursor<&[u8]>) -> PyResult<PyObject> {
     let value = match cursor.get_element_type() {
         ElementTypeCode::Map | ElementTypeCode::MapCHD => cursor
             .iter_map()?
@@ -197,12 +198,12 @@ fn pythonize(py: Python<'_>, cursor: BorrowedCursor<'_>) -> PyResult<PyObject> {
             }
             list.into()
         }
-        ElementTypeCode::String => cursor.parse_str()?.into_py(py),
+        ElementTypeCode::String => cursor.get_str()?.into_py(py),
         ElementTypeCode::None => py.None(),
         ElementTypeCode::True => true.into_py(py),
         ElementTypeCode::False => false.into_py(py),
-        ElementTypeCode::Int32 => cursor.parse_i32()?.into_py(py),
-        ElementTypeCode::Int64 => cursor.parse_i64()?.into_py(py),
+        ElementTypeCode::Int32 => cursor.get_i32()?.into_py(py),
+        ElementTypeCode::Int64 => cursor.get_i64()?.into_py(py),
         ElementTypeCode::UInt32 => unimplemented!(),
         ElementTypeCode::UInt64 => unimplemented!(),
         ElementTypeCode::Double => unimplemented!(),
@@ -214,6 +215,6 @@ fn pythonize(py: Python<'_>, cursor: BorrowedCursor<'_>) -> PyResult<PyObject> {
 #[pymodule]
 #[pyo3(name = "sbson")]
 fn top_level_module(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    m.add_class::<Cursor>()?;
+    m.add_class::<PyCursor>()?;
     Ok(())
 }

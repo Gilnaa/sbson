@@ -18,41 +18,41 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::{BorrowedCursor, CachedMapCursor};
-
 use super::raw_cursor::{get_byte_array_at, RawCursor};
 use super::{CursorError, ElementTypeCode};
 use core::ffi::CStr;
-use std::ops::Range;
-use std::sync::Arc;
+use core::ops::Range;
 
+/// An SBSON cursor over a buffer-type.
+/// 
+/// The supplied buffer type can be, for example, any of `&[u8]`, `Arc<[u8]>`, `Rc<[u8]>`, etc.
+/// Beware of supplying `Vec<u8>` and the like, as creating sub-cursors may clone the entire buffer. 
 #[derive(Debug, Clone)]
-pub struct ArcCursor {
+pub struct Cursor<T: Clone + AsRef<[u8]>> {
     /// A reference to the entire top-level document
-    pub(crate) buffer: Arc<[u8]>,
+    pub(crate) buffer: T,
     /// The range of the current pointed-to element inside the buffer.
     pub(crate) range: Range<usize>,
     pub(crate) raw_cursor: RawCursor,
 }
 
-impl ArcCursor {
+impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     #[inline(always)]
     pub fn scoped_buffer(&self) -> &[u8] {
-        &(*self.buffer).as_ref()[self.range.clone()]
+        &self.buffer.as_ref()[self.range.clone()]
     }
 
     pub fn payload_scoped_buffer(&self) -> &[u8] {
         let mut range = self.range.clone();
         // Skip the first element as it is the element type
         range.start += 1;
-        &(*self.buffer).as_ref()[range]
+        &self.buffer.as_ref()[range]
     }
 }
 
-impl ArcCursor {
-    pub fn new<T: Into<Arc<[u8]>>>(buffer: T) -> Result<Self, CursorError> {
-        let buffer = buffer.into();
-        let raw_cursor = RawCursor::new(&buffer)?;
+impl<T: Clone + AsRef<[u8]>> Cursor<T> {
+    pub fn new(buffer: T) -> Result<Self, CursorError> {
+        let raw_cursor = RawCursor::new(buffer.as_ref())?;
         let range = 0..buffer.as_ref().len();
         Ok(Self {
             buffer,
@@ -61,7 +61,7 @@ impl ArcCursor {
         })
     }
 
-    pub fn new_with_range(buffer: Arc<[u8]>, range: Range<usize>) -> Result<Self, CursorError> {
+    pub fn new_with_range(buffer: T, range: Range<usize>) -> Result<Self, CursorError> {
         let raw_cursor = RawCursor::new(
             buffer
                 .as_ref()
@@ -129,7 +129,7 @@ impl ArcCursor {
         ))
     }
 
-    pub fn parse_bool(&self) -> Result<bool, CursorError> {
+    pub fn get_bool(&self) -> Result<bool, CursorError> {
         match self.raw_cursor.element_type {
             ElementTypeCode::True => Ok(true),
             ElementTypeCode::False => Ok(false),
@@ -139,12 +139,12 @@ impl ArcCursor {
         }
     }
 
-    pub fn parse_none(&self) -> Result<(), CursorError> {
+    pub fn get_none(&self) -> Result<(), CursorError> {
         self.raw_cursor.ensure_element_type(ElementTypeCode::None)?;
         Ok(())
     }
 
-    pub fn parse_i32(&self) -> Result<i32, CursorError> {
+    pub fn get_i32(&self) -> Result<i32, CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::Int32)?;
 
@@ -154,7 +154,7 @@ impl ArcCursor {
         )?))
     }
 
-    pub fn parse_i64(&self) -> Result<i64, CursorError> {
+    pub fn get_i64(&self) -> Result<i64, CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::Int64)?;
 
@@ -164,8 +164,12 @@ impl ArcCursor {
         )?))
     }
 
-    /// Returns a pointer to the null-terminated string pointed to by the cursor
-    pub fn parse_cstr(&self) -> Result<&CStr, CursorError> {
+    /// Returns a reference to the null-terminated string pointed to by the cursor.
+    /// 
+    /// The returned reference is lifetime-bound to the current cursor.
+    /// If the cursor is not an owning-cursor, a reference bound to the backing storage
+    /// can be receieved by calling `get_storage_cstr`.
+    pub fn get_cstr(&self) -> Result<&CStr, CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::String)?;
 
@@ -178,40 +182,104 @@ impl ArcCursor {
 
     /// Try to parse the string as a UTF-8 string.
     /// SBSON spec requires strings to be valid UTF-8 sans-nul; if you suspect
-    /// your document is non-conforming, use `parse_cstr`.
-    pub fn parse_str(&self) -> Result<&str, CursorError> {
-        self.parse_cstr()?
+    /// your document is non-conforming, use `get_cstr`.
+    /// 
+    /// The returned reference is lifetime-bound to the current cursor.
+    /// If the cursor is not an owning-cursor, a reference bound to the backing storage
+    /// can be receieved by calling `get_storage_str`.
+    pub fn get_str(&self) -> Result<&str, CursorError> {
+        self.get_cstr()?
             .to_str()
             .map_err(|_| CursorError::Utf8Error)
     }
 
-    pub fn parse_binary(&self) -> Result<&[u8], CursorError> {
+    pub fn get_binary(&self) -> Result<&[u8], CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::Binary)?;
 
         Ok(self.payload_scoped_buffer())
     }
 
-    pub fn cache_map(&self) -> Result<CachedMapCursor, CursorError> {
-        self.raw_cursor.ensure_element_type(ElementTypeCode::Map)?;
-        CachedMapCursor::new(self.clone())
+    /// Iterate over the children of this map node.
+    /// Malformed children are silently dropped.
+    pub fn iter_map<'a>(
+        &'a self
+    ) -> Result<impl Iterator<Item = (&'a str, Self)> + 'a, CursorError> {
+        Ok(self
+            .raw_cursor
+            .iter_map(self.range.clone(), self.scoped_buffer())?
+            // Ignore 
+            .flat_map(|kv| kv.ok())
+            .flat_map(|(key, range)| {
+                Cursor::new_with_range(self.buffer.clone(), range)
+                    .ok()
+                    .map(|cursor| (key, cursor))
+            }))
     }
 
-    pub fn iter_borrowed<'a>(
+    /// Iterate over the children of this map node, returning borrowed cursors.
+    /// Malformed 
+    pub fn iter_map_borrowed<'a>(
         &'a self,
-    ) -> Result<impl Iterator<Item = (String, BorrowedCursor<'a>)>, CursorError> {
+    ) -> Result<impl Iterator<Item = (&'a str, Cursor<&'a [u8]>)>, CursorError> {
         Ok(self
             .raw_cursor
             .iter_map(self.range.clone(), self.scoped_buffer())?
             .flat_map(|kv| kv.ok())
             .flat_map(|(key, range)| {
-                BorrowedCursor::new(&self.buffer[range])
+                Cursor::new_with_range(self.buffer.as_ref(), range)
                     .ok()
-                    .map(|cursor| (key.to_string(), cursor))
+                    .map(|cursor| (key, cursor))
             }))
     }
 
-    pub fn borrow(&self) -> BorrowedCursor<'_> {
-        BorrowedCursor::new_with_cursor(self.scoped_buffer(), self.raw_cursor.clone())
+    pub fn iter_array(&self) -> Result<impl Iterator<Item = Cursor<&[u8]>>, CursorError> {
+        Ok(self
+            .raw_cursor
+            .iter_array(self.range.clone(), self.buffer.as_ref())?
+            .flat_map(|range| Cursor::new_with_range(self.buffer.as_ref(), range).ok()))
+    }
+
+    /// Returns a new cursor that borrows this one.
+    /// This is useful for cases where a lot of cursor-juggling is expected, in case
+    /// that the current cursor is reference-counted.    
+    pub fn borrow(&self) -> Cursor<&[u8]> {
+        Cursor {
+            buffer: self.buffer.as_ref(),
+            range: self.range.clone(),
+            raw_cursor: self.raw_cursor.clone(),
+        }
+    }
+}
+
+impl<'data> Cursor<&'data [u8]> {
+    /// Returns a reference to the null-terminated string pointed to by the cursor.
+    /// 
+    /// This reference is lifetime-bound to the backing storage referenced by this cursor,
+    /// and may outlive the cursor.
+    pub fn get_storage_cstr(&self) -> Result<&'data CStr, CursorError> {
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::String)?;
+
+        // NOTE: Can also fail if there's an embedded null character; might want to use
+        // `from_bytes_until_nul` when stabilisied.
+        // https://github.com/rust-lang/rust/issues/95027
+        let mut range = self.range.clone();
+        // Skip the first element as it is the element type
+        range.start += 1;
+        CStr::from_bytes_with_nul(&self.buffer.as_ref()[range])
+            .map_err(|_| CursorError::UnterminatedString)
+    }
+
+    /// Try to parse the string as a UTF-8 string.
+    /// SBSON spec requires strings to be valid UTF-8 sans-nul; if you suspect
+    /// your document is non-conforming, use `get_storage_cstr`.
+    /// 
+    /// This reference is lifetime-bound to the backing storage referenced by this cursor,
+    /// and may outlive the cursor.
+    pub fn get_storage_str(&self) -> Result<&'data str, CursorError> {
+        self.get_storage_cstr()?
+            .to_str()
+            .map_err(|_| CursorError::Utf8Error)
     }
 }
