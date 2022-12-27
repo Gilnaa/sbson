@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import siphasher
-from typing import Any
+from typing import Any, List, Tuple, Dict
 
 LAMBDA = 5
 
@@ -26,23 +26,23 @@ class Hashes:
 @dataclass
 class Bucket:
     index: int
-    keys: list[int]
+    keys: List[int]
 
 
 @dataclass
 class HashState:
     seed: int
     # A list of (d1,d2) displacement pairs, one per bucket
-    disps: list[tuple[int, int]]
+    disps: List[Tuple[int, int]]
     # A list mapping the output of the hash function to the original ordered set of keys.
-    hash_output_to_original_index: list[int]
+    hash_output_to_original_index: List[int]
 
 
 @dataclass
 class HashMap:
     seed: int
-    disps: list[tuple[int, int]]
-    key_values: list[tuple[str, Any]]
+    disps: List[Tuple[int, int]]
+    key_values: List[Tuple[str, Any]]
 
 
 def displace(f1: int, f2: int, d1: int, d2: int) -> int:
@@ -56,13 +56,13 @@ def displace(f1: int, f2: int, d1: int, d2: int) -> int:
 
 
 def _try_build_generation(bucket: Bucket,
-                          hashes: list[Hashes],
+                          hashes: List[Hashes],
                           d1: int,
                           d2: int,
                           table_len: int,
-                          try_map: list[int],
-                          map: list[int],
-                          generation: int) -> list[tuple[int, int]]:
+                          try_map: List[int],
+                          map: List[int],
+                          generation: int) -> List[Tuple[int, int]]:
     values_to_add = []
     for key in bucket.keys:
         h = hashes[key]
@@ -74,7 +74,7 @@ def _try_build_generation(bucket: Bucket,
     return values_to_add
 
 
-def try_build_hash_state(keys: list[str], seed: int):
+def try_build_hash_state(keys: List[str], seed: int):
     table_len = len(keys)
     buckets_len = (table_len + LAMBDA - 1) // LAMBDA
     hashes = [Hashes(key, seed) for key in keys]
@@ -128,7 +128,7 @@ def try_build_map(d: dict, seed: int):
     ]
     return HashMap(hash_state.seed, hash_state.disps, key_values)
 
-def contains_key(hash_state: HashState, keys: list[str], key) -> bool:
+def contains_key(hash_state: HashState, keys: List[str], key) -> bool:
     hashes = Hashes(key, hash_state.seed)
     bucket = hash_state.disps[hashes.g % len(hash_state.disps)]
     idx = displace(hashes.f1, hashes.f2, bucket[0], bucket[1]) % len(keys)

@@ -130,7 +130,7 @@ def _encode_map_chd(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -
     return header + descriptors + keys + values
 
 
-def _sort_eytzinger(kvs: list[str]):
+def _sort_eytzinger(kvs: typing.List[str]):
     new_arr = [None] * (len(kvs) + 1)
     kvs.sort()
     i = 0
