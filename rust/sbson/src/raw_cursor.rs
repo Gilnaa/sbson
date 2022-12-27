@@ -26,6 +26,12 @@ const U32_SIZE_BYTES: usize = core::mem::size_of::<u32>();
 const ARRAY_DESCRIPTOR_SIZE: usize = U32_SIZE_BYTES;
 const MAP_DESCRIPTOR_SIZE: usize = 2 * U32_SIZE_BYTES;
 
+struct MapDescriptor {
+    key_offset: usize,
+    key_length: usize,
+    value_offset: usize,
+}
+
 pub fn get_byte_array_at<const N: usize>(
     buffer: &[u8],
     offset: usize,
@@ -53,16 +59,17 @@ pub fn get_u32_pair_at_offset(buffer: &[u8], offset: usize) -> Result<(u32, u32)
     Ok((a, b))
 }
 
-pub fn get_u32_quad_at_offset(
-    buffer: &[u8],
-    offset: usize,
-) -> Result<(u32, u32, u32, u32), CursorError> {
-    let qword = u128::from_le_bytes(get_byte_array_at(buffer, offset)?);
-    let a = qword as u32;
-    let b = (qword >> 32) as u32;
-    let c = (qword >> 64) as u32;
-    let d = (qword >> 96) as u32;
-    Ok((a, b, c, d))
+fn get_map_descriptor(descriptors: &[u8], index: usize) -> Result<MapDescriptor, CursorError> {
+    let (key_data, value_offset) =
+        get_u32_pair_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * index as usize)?;
+    let key_offset = (key_data & 0x00FFFFFF) as usize;
+    let key_length = (key_data >> 24) as usize;
+    let value_offset = value_offset as usize;
+    Ok(MapDescriptor {
+        key_offset,
+        key_length,
+        value_offset,
+    })
 }
 
 const fn calculate_bucket_count(child_count: u32) -> usize {
@@ -124,7 +131,7 @@ impl RawCursor {
         let element_type = ElementTypeCode::try_from(*first)?;
 
         let child_count = match element_type {
-            | ElementTypeCode::Map
+            ElementTypeCode::Map
             | ElementTypeCode::Array
             | ElementTypeCode::MapCHD
             | ElementTypeCode::MapEytzinger => get_u32_at_offset(buffer, 0)?,
@@ -144,33 +151,46 @@ impl RawCursor {
         buffer: &[u8],
         index: usize,
     ) -> Result<(Range<usize>, RawCursor), CursorError> {
-        let (descriptors_offset, descriptor_size, value_offset_within_header) = match self.element_type {
-            ElementTypeCode::Array =>           (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 ARRAY_DESCRIPTOR_SIZE,  0),
-            ElementTypeCode::Map =>             (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
-            ElementTypeCode::MapEytzinger =>    (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,                 MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
-            ElementTypeCode::MapCHD =>          (calculate_chd_descriptors_offset(self.child_count), MAP_DESCRIPTOR_SIZE,    U32_SIZE_BYTES),
-            _ => {
-                return Err(CursorError::WrongElementType {
-                    actual: self.element_type,
-                })
-            }
-        };
+        let (descriptors_offset, descriptor_size, value_offset_within_header) =
+            match self.element_type {
+                ElementTypeCode::Array => {
+                    (ELEMENT_TYPE_SIZE + U32_SIZE_BYTES, ARRAY_DESCRIPTOR_SIZE, 0)
+                }
+                ElementTypeCode::Map => (
+                    ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,
+                    MAP_DESCRIPTOR_SIZE,
+                    U32_SIZE_BYTES,
+                ),
+                ElementTypeCode::MapEytzinger => (
+                    ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,
+                    MAP_DESCRIPTOR_SIZE,
+                    U32_SIZE_BYTES,
+                ),
+                ElementTypeCode::MapCHD => (
+                    calculate_chd_descriptors_offset(self.child_count),
+                    MAP_DESCRIPTOR_SIZE,
+                    U32_SIZE_BYTES,
+                ),
+                _ => {
+                    return Err(CursorError::WrongElementType {
+                        actual: self.element_type,
+                    })
+                }
+            };
 
         if index >= self.child_count as usize {
             return Err(CursorError::ItemIndexOutOfBounds);
         }
 
         // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
-        let item_header_start = descriptors_offset
-            + descriptor_size * index
-            + value_offset_within_header;
+        let item_header_start =
+            descriptors_offset + descriptor_size * index + value_offset_within_header;
         let item_offset_start = get_u32_at_offset(buffer, item_header_start)? as usize;
         let range = if index == self.child_count as usize - 1 {
             item_offset_start..buffer.len()
         } else {
-            let next_item_header_start = descriptors_offset
-                + descriptor_size * (index + 1)
-                + value_offset_within_header;
+            let next_item_header_start =
+                descriptors_offset + descriptor_size * (index + 1) + value_offset_within_header;
             let next_item_offset_start =
                 get_u32_at_offset(buffer, next_item_header_start)? as usize;
             item_offset_start..next_item_offset_start
@@ -182,17 +202,41 @@ impl RawCursor {
         Ok((range, RawCursor::new(buffer)?))
     }
 
+    fn get_key_buffer_by_index<'a>(
+        &self,
+        buffer: &'a [u8],
+        index: usize,
+    ) -> Result<&'a [u8], CursorError> {
+        if index >= self.child_count as usize {
+            return Err(CursorError::ItemIndexOutOfBounds);
+        }
+
+        let descriptors = self.get_map_descriptors(buffer)?;
+        let MapDescriptor {
+            key_offset,
+            key_length,
+            ..
+        } = get_map_descriptor(descriptors, index)?;
+
+        buffer
+            .get(key_offset..key_offset + key_length)
+            .ok_or(CursorError::DocumentTooShort)
+    }
+
     pub fn get_key_by_index<'a>(
         &self,
         buffer: &'a [u8],
         index: usize,
     ) -> Result<&'a str, CursorError> {
-        if index >= self.child_count as usize {
-            return Err(CursorError::ItemIndexOutOfBounds);
-        }
+        self.get_key_buffer_by_index(buffer, index)
+            .and_then(|key_buf| std::str::from_utf8(key_buf).map_err(|_| CursorError::Utf8Error))
+    }
 
-        let descriptors_offset = match self.element_type {
-            ElementTypeCode::Map =>    ELEMENT_TYPE_SIZE + U32_SIZE_BYTES,
+    fn get_map_descriptors<'a>(&self, buffer: &'a [u8]) -> Result<&'a [u8], CursorError> {
+        let descriptor_start = match self.element_type {
+            ElementTypeCode::Map | ElementTypeCode::MapEytzinger => {
+                ELEMENT_TYPE_SIZE + U32_SIZE_BYTES
+            }
             ElementTypeCode::MapCHD => calculate_chd_descriptors_offset(self.child_count),
             _ => {
                 return Err(CursorError::WrongElementType {
@@ -202,106 +246,78 @@ impl RawCursor {
         };
 
         // Offset I+1 dwords into the array to skip the item-count and irrelevant headers.
-        let item_header_start = descriptors_offset + MAP_DESCRIPTOR_SIZE * index;
-        let key_offset_start = get_u32_at_offset(buffer, item_header_start)? as usize;
-        let key_offset_end = if index == self.child_count as usize - 1 {
-            let first_item_header_payload_offset = descriptors_offset
-                + U32_SIZE_BYTES; // < Second dword in header is the payload offset
-
-            get_u32_at_offset(buffer, first_item_header_payload_offset)? as usize
-        } else {
-            let next_item_header_start =
-            descriptors_offset + MAP_DESCRIPTOR_SIZE * (index + 1);
-
-            get_u32_at_offset(buffer, next_item_header_start)? as usize
-        };
-
-        let key_buf = buffer
-            .get(key_offset_start..key_offset_end)
+        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
+        let descriptors = buffer
+            .get((descriptor_start)..descriptor_end)
             .ok_or(CursorError::DocumentTooShort)?;
-        // TODO: Convert to proper error
-        let key_cstr = core::ffi::CStr::from_bytes_with_nul(key_buf).unwrap();
-
-        // TODO: Maybe expose actual UTF-8 errors
-        key_cstr.to_str().map_err(|_| CursorError::Utf8Error)
+        Ok(descriptors)
     }
 
-    fn get_value_and_index_by_key_chd(&self, buffer: &[u8], key: &str) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
+    fn get_value_and_index_by_key_chd(
+        &self,
+        buffer: &[u8],
+        key: &str,
+    ) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
         let chd_seed_offset = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
         let chd_displacement_start = chd_seed_offset + U32_SIZE_BYTES;
         let seed = get_u32_at_offset(buffer, chd_seed_offset)? as u64;
         let bucket_count = calculate_bucket_count(self.child_count);
 
         let hashes = phf_shared::hash(key, &seed);
-        let bucket_offset = chd_displacement_start + (U32_SIZE_BYTES * 2) * (hashes.g as usize % bucket_count);
+        let bucket_offset =
+            chd_displacement_start + (U32_SIZE_BYTES * 2) * (hashes.g as usize % bucket_count);
         let (d1, d2) = get_u32_pair_at_offset(buffer, bucket_offset)?;
         let index = phf_shared::displace(hashes.f1, hashes.f2, d1, d2) % self.child_count;
         let index = index as usize;
-        let stored_key = self.get_key_by_index(buffer, index)?;
-        if key != stored_key {
+        let stored_key = self.get_key_buffer_by_index(buffer, index)?;
+        if key.as_bytes() != stored_key {
             Err(CursorError::KeyNotFound)
         } else {
-            self.get_value_by_index(buffer, index).map(|(range, cursor)| (index, range, cursor))
+            self.get_value_by_index(buffer, index)
+                .map(|(range, cursor)| (index, range, cursor))
         }
     }
 
-    fn get_value_and_index_by_key_eytzinger(&self, buffer: &[u8], key: &str) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
-        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
-        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
-        
-        let descriptors = buffer
-            .get((descriptor_start)..descriptor_end)
-            .ok_or(CursorError::DocumentTooShort)?;
+    fn get_value_and_index_by_key_eytzinger(
+        &self,
+        buffer: &[u8],
+        key: &str,
+    ) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
+        let descriptors = self.get_map_descriptors(buffer)?;
 
         // Eytzinger scheme uses 1-based indicies. We decrease 1 just before indexing
         let key = key.as_bytes();
-        let mut index = 1;
+        let mut k = 1;
 
-        while index <= self.child_count {
-            let (current_key, value_range) = if (index - 1) == self.child_count - 1 {
-                // PANIC-SAFETY: Index calculation is bound not user dependent.
-                let (key_offset, value_offset) =
-                    get_u32_pair_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * (index - 1) as usize).unwrap();
-                let key_offset = key_offset as usize;
-
-                let key_slice = buffer
-                    .get(key_offset..)
-                    .ok_or(CursorError::UnterminatedString)?;
-                let null_terminator =
-                    memchr::memchr(0, key_slice).ok_or(CursorError::UnterminatedString)?;
-
-                (
-                    // PANIC-SAFETY: `null_terminator` was found after `key_offset` in the buffer, so they're both in range.
-                    &buffer[key_offset..key_offset + null_terminator],
-                    value_offset as usize..buffer.len(),
-                )
-            } else {
-                // PANIC-SAFETY: Index calculation is bound not user dependent.
-                //               Specifically since this is not the last descriptor, we know to have at least 128bits available.
-                let (key_offset, value_offset, next_key_offset, next_value_offset) =
-                    get_u32_quad_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * (index - 1) as usize).unwrap();
-                let key_offset = key_offset as usize;
-                let next_key_offset = next_key_offset as usize;
-                // We must check the offset here as its payload-provided and unverified.
-                let current_key = buffer
-                    .get(key_offset..next_key_offset as usize - 1)
-                    .ok_or(CursorError::EmbeddedOffsetOutOfBounds)?;
-
-                (
-                    current_key,
-                    value_offset as usize..next_value_offset as usize,
-                )
-            };
-            //-----//
+        while k <= self.child_count {
+            let index = (k - 1) as usize;
+            let MapDescriptor {
+                key_offset,
+                key_length,
+                value_offset,
+            } = get_map_descriptor(descriptors, index)?;
+            let current_key = buffer
+                .get(key_offset..key_offset + key_length)
+                .ok_or(CursorError::EmbeddedOffsetOutOfBounds)?;
 
             match key.cmp(current_key) {
-                std::cmp::Ordering::Less => index = index * 2,
-                std::cmp::Ordering::Greater => index = index * 2 + 1,
+                std::cmp::Ordering::Less => k = k * 2,
+                std::cmp::Ordering::Greater => k = k * 2 + 1,
                 std::cmp::Ordering::Equal => {
+                    // We already have the value offset, we just need to get the offset of the next value / buffer end.
+                    let mut value_end = buffer.len();
+                    if index + 1 < self.child_count as usize {
+                        value_end = get_u32_at_offset(
+                            descriptors,
+                            MAP_DESCRIPTOR_SIZE * (index + 1) + U32_SIZE_BYTES,
+                        )
+                        .unwrap() as usize;
+                    }
+                    let value_range = value_offset as usize..value_end;
                     let buffer = buffer
                         .get(value_range.clone())
                         .ok_or(CursorError::DocumentTooShort)?;
-                    return RawCursor::new(buffer).map(|cursor| ((index - 1) as usize, value_range, cursor));
+                    return RawCursor::new(buffer).map(|cursor| (index, value_range, cursor));
                 }
             }
         }
@@ -325,14 +341,7 @@ impl RawCursor {
         self.ensure_element_type(ElementTypeCode::Map)?;
         let key = key.as_bytes();
 
-        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
-        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
-
-        // This slice contains, for each element, a descriptor that looks like `{key_offset: u32, value_offset: u32}`.
-        // We cannot convert it to a `&[u32]` because we do not know that that the data is aligned.
-        let descriptors = buffer
-            .get(descriptor_start..descriptor_end)
-            .ok_or(CursorError::DocumentTooShort)?;
+        let descriptors = self.get_map_descriptors(buffer)?;
 
         // Perform a binary search on the key descriptors to see if we can find our items.
         let mut window_size = self.child_count as usize;
@@ -342,45 +351,29 @@ impl RawCursor {
             window_size = right - left;
             let mid = left + window_size / 2;
 
-            let (current_key, value_range) = if mid == self.child_count as usize - 1 {
-                // PANIC-SAFETY: Index calculation is bound not user dependent.
-                let (key_offset, value_offset) =
-                    get_u32_pair_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid).unwrap();
-                let key_offset = key_offset as usize;
+            let MapDescriptor {
+                key_offset,
+                key_length,
+                value_offset,
+            } = get_map_descriptor(descriptors, mid)?;
 
-                let key_slice = buffer
-                    .get(key_offset..)
-                    .ok_or(CursorError::UnterminatedString)?;
-                let null_terminator =
-                    memchr::memchr(0, key_slice).ok_or(CursorError::UnterminatedString)?;
-
-                (
-                    // PANIC-SAFETY: `null_terminator` was found after `key_offset` in the buffer, so they're both in range.
-                    &buffer[key_offset..key_offset + null_terminator],
-                    value_offset as usize..buffer.len(),
-                )
-            } else {
-                // PANIC-SAFETY: Index calculation is bound not user dependent.
-                //               Specifically since this is not the last descriptor, we know to have at least 128bits available.
-                let (key_offset, value_offset, next_key_offset, next_value_offset) =
-                    get_u32_quad_at_offset(descriptors, MAP_DESCRIPTOR_SIZE * mid).unwrap();
-                let key_offset = key_offset as usize;
-                let next_key_offset = next_key_offset as usize;
-                // We must check the offset here as its payload-provided and unverified.
-                let current_key = buffer
-                    .get(key_offset..next_key_offset as usize - 1)
-                    .ok_or(CursorError::EmbeddedOffsetOutOfBounds)?;
-
-                (
-                    current_key,
-                    value_offset as usize..next_value_offset as usize,
-                )
-            };
+            let current_key = buffer
+                .get(key_offset..key_offset + key_length)
+                .ok_or(CursorError::EmbeddedOffsetOutOfBounds)?;
 
             match current_key.cmp(key) {
                 std::cmp::Ordering::Less => left = mid + 1,
                 std::cmp::Ordering::Greater => right = mid,
                 std::cmp::Ordering::Equal => {
+                    let mut value_end = buffer.len();
+                    if mid + 1 < self.child_count as usize {
+                        value_end = get_u32_at_offset(
+                            descriptors,
+                            MAP_DESCRIPTOR_SIZE * (mid + 1) as usize + U32_SIZE_BYTES,
+                        )
+                        .unwrap() as usize;
+                    }
+                    let value_range = value_offset as usize..value_end;
                     let buffer = buffer
                         .get(value_range.clone())
                         .ok_or(CursorError::DocumentTooShort)?;
@@ -398,19 +391,10 @@ impl RawCursor {
         buffer: &'a [u8],
     ) -> Result<MapIter<'a>, CursorError> {
         self.ensure_element_type(ElementTypeCode::Map)?;
-
-        let descriptor_start = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
-        let descriptor_end = descriptor_start + MAP_DESCRIPTOR_SIZE * self.child_count as usize;
-
-        // This slice contains, for each element, a descriptor that looks like `{key_offset: u32, value_offset: u32}`.
-        // We cannot convert it to a `&[u32]` because we do not know that that the data is aligned.
-        let descriptors = buffer
-            .get(descriptor_start..descriptor_end)
-            .ok_or(CursorError::DocumentTooShort)?;
         Ok(MapIter {
             index: 0,
             max: self.child_count,
-            descriptors: descriptors,
+            descriptors: self.get_map_descriptors(buffer)?,
             whole_buffer: buffer,
             self_offset: self_range.start,
         })

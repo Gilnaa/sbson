@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use sbson::Cursor;
+use sbson::{Cursor, PathSegment};
 
 const GOTO_TREE: &[u8] = include_bytes!("../../../test_vectors/goto.sbson");
 const GOTO_TREE_PHF: &[u8] = include_bytes!("../../../test_vectors/goto_phf.sbson");
 const GOTO_TREE_EYTZINGER: &[u8] = include_bytes!("../../../test_vectors/goto_eytzinger.sbson");
 
-fn criterion_benchmark(c: &mut Criterion) {
+fn bench_goto_item(c: &mut Criterion) {
     // Turn it into an Arc once at the start of the test.
     // We're not interested in the cost of copying the whole buffer into the Arc.
     let goto_tree_arc: Arc<[u8]> = GOTO_TREE.into();
@@ -24,7 +24,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     let cur_arc_chd = Cursor::new(goto_tree_phf_arc.clone()).unwrap();
     let top_arc_chd = cur_arc_chd.get_value_by_key("top").unwrap();
 
-    let cur_borrow_eytzinger: Cursor<&[u8]> = Cursor::new(goto_tree_eytzinger_arc.as_ref()).unwrap();
+    let cur_borrow_eytzinger: Cursor<&[u8]> =
+        Cursor::new(goto_tree_eytzinger_arc.as_ref()).unwrap();
     let top_borrow_eytzinger = cur_borrow_eytzinger.get_value_by_key("top").unwrap();
     let cur_arc_eytzinger = Cursor::new(goto_tree_phf_arc.clone()).unwrap();
     let top_arc_eytzinger = cur_arc_eytzinger.get_value_by_key("top").unwrap();
@@ -35,7 +36,10 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // The test vector has a map with 8000 items named `item_{i}`.
     // Since keying into the map is a O(log2(N)), we're measuring access at various points.
-    for i in (0..8000).step_by(80) {
+    //
+    // 4095 is the root node when encoding using Eytzinger.
+    // Stepping by a prime number to avoid taking numbers that will match some other bin-search pattern.
+    for i in (0..8000).step_by(71).chain([4095]) {
         let item_name = format!("item_{i:04}");
 
         group.bench_function(BenchmarkId::new("goto_borrow", i), |b| {
@@ -166,9 +170,101 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 }
 
+fn bench_goto_all_items(c: &mut Criterion) {
+    let item_names: Vec<_> = (0..8000).map(|i| format!("item_{i:04}")).collect();
+    let mut group = c.benchmark_group("goto_all_items");
+
+    let goto_tree_arc: Arc<[u8]> = GOTO_TREE.into();
+    let goto_tree_phf_arc: Arc<[u8]> = GOTO_TREE_PHF.into();
+    let goto_tree_eytzinger_arc: Arc<[u8]> = GOTO_TREE_EYTZINGER.into();
+
+    let cur_borrow: Cursor<&[u8]> = Cursor::new(goto_tree_arc.as_ref()).unwrap();
+    let top_borrow = cur_borrow.get_value_by_key("top").unwrap();
+    let cur_arc = Cursor::new(goto_tree_arc.clone()).unwrap();
+    let top_arc = cur_arc.get_value_by_key("top").unwrap();
+
+    let cur_borrow_chd: Cursor<&[u8]> = Cursor::new(goto_tree_phf_arc.as_ref()).unwrap();
+    let top_borrow_chd = cur_borrow_chd.get_value_by_key("top").unwrap();
+    let cur_arc_chd = Cursor::new(goto_tree_phf_arc.clone()).unwrap();
+    let top_arc_chd = cur_arc_chd.get_value_by_key("top").unwrap();
+
+    let cur_borrow_eytzinger: Cursor<&[u8]> =
+        Cursor::new(goto_tree_eytzinger_arc.as_ref()).unwrap();
+    let top_borrow_eytzinger = cur_borrow_eytzinger.get_value_by_key("top").unwrap();
+    let cur_arc_eytzinger = Cursor::new(goto_tree_phf_arc.clone()).unwrap();
+    let top_arc_eytzinger = cur_arc_eytzinger.get_value_by_key("top").unwrap();
+
+    group.bench_function("goto_borrow", |b| {
+        b.iter(|| {
+            for item_name in item_names.iter() {
+                let integer = top_borrow
+                    .get_value_by_key(&item_name)
+                    .unwrap()
+                    .get_value_by_key("something")
+                    .unwrap()
+                    .get_value_by_index(3)
+                    .unwrap()
+                    .get_element_type();
+                black_box(integer);
+            }
+        });
+    });
+
+    group.bench_function("goto_goto_borrow", |b| {
+        b.iter(|| {
+            for item_name in item_names.iter() {
+                let integer = top_borrow
+                    .goto(
+                        [
+                            PathSegment::Key(&item_name),
+                            PathSegment::Key("something"),
+                            PathSegment::Index(3),
+                        ]
+                        .into_iter(),
+                    )
+                    .unwrap()
+                    .get_element_type();
+                black_box(integer);
+            }
+        });
+    });
+
+    group.bench_function("goto_borrow_chd", |b| {
+        b.iter(|| {
+            for item_name in item_names.iter() {
+                let integer = top_borrow_chd
+                    .get_value_by_key(&item_name)
+                    .unwrap()
+                    .get_value_by_key("something")
+                    .unwrap()
+                    .get_value_by_index(3)
+                    .unwrap()
+                    .get_element_type();
+                black_box(integer);
+            }
+        });
+    });
+
+    group.bench_function("goto_borrow_eytzinger", |b| {
+        b.iter(|| {
+            for item_name in item_names.iter() {
+                let integer = top_borrow_eytzinger
+                    .get_value_by_key(&item_name)
+                    .unwrap()
+                    .get_value_by_key("something")
+                    .unwrap()
+                    .get_value_by_index(3)
+                    .unwrap()
+                    .get_element_type();
+                black_box(integer);
+            }
+        });
+    });
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default().with_plots();
-    targets = criterion_benchmark
+    targets = bench_goto_item, bench_goto_all_items
 );
 criterion_main!(benches);

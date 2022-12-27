@@ -25,9 +25,9 @@ mod raw_cursor;
 // #[cfg(feature = "std")]
 // mod cached_map_cursor;
 
+mod cursor;
 #[cfg(feature = "pyo3")]
 mod pyo3;
-mod cursor;
 pub use cursor::Cursor;
 #[cfg(feature = "serde")]
 mod serde;
@@ -99,6 +99,11 @@ pub enum CursorError {
     EmbeddedOffsetOutOfBounds,
     ItemIndexOutOfBounds,
     KeyNotFound,
+}
+
+pub enum PathSegment<'a> {
+    Key(&'a str),
+    Index(usize),
 }
 
 #[cfg(test)]

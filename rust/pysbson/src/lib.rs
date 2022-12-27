@@ -129,7 +129,10 @@ impl PyCursor {
         };
 
         let value = match cursor.get_element_type() {
-            ElementTypeCode::Map | ElementTypeCode::Array | ElementTypeCode::MapCHD | ElementTypeCode::MapEytzinger => {
+            ElementTypeCode::Map
+            | ElementTypeCode::Array
+            | ElementTypeCode::MapCHD
+            | ElementTypeCode::MapEytzinger => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "Cannot get the value of a non-leaf node.",
                 ))

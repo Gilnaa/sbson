@@ -122,7 +122,8 @@ def _encode_map_chd(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -
     keys_offset = len(header) + descriptors_len
     values_offset = keys_offset + len(keys)
     for name, value in zip(field_names, field_values):
-        descriptors += struct.pack('<2I', keys_offset, values_offset)
+        key_data = ((len(name) - 1) << 24) | keys_offset
+        descriptors += struct.pack('<2I', key_data, values_offset)
         keys_offset += len(name)
         values_offset += len(value)
     
@@ -159,11 +160,6 @@ def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> byt
     if options.use_eytzinger:
         element_type = ElementType.MAP_EYTZINGER
         field_names = _sort_eytzinger(list(obj.keys()))[1:]
-        if 'item_0000' in field_names:
-            print(field_names)
-            print('item_0000',field_names.index('item_0000') + 1)
-        if 'item_7999' in field_names:
-            print('item_7999',field_names.index('item_7999') + 1)
     else:
         # TODO: Ensure this sorts lexicographically and not anything smarter
         element_type = ElementType.MAP
@@ -185,7 +181,9 @@ def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> byt
     keys_offset = header_size
     values_offset = header_size + len(keys)
     for name, value in zip(field_names, field_values):
-        descriptors += struct.pack('<2I', keys_offset, values_offset)
+        # Subtract 1 to account for the null-terminator we added earlier
+        key_data = keys_offset | ((len(name) - 1) << 24)
+        descriptors += struct.pack('<2I', key_data, values_offset)
         keys_offset += len(name)
         values_offset += len(value)
     assert keys_offset == header_size + len(keys)
@@ -203,13 +201,10 @@ def decode_map_chd(view: memoryview) -> dict:
     field_descriptors = []
     descriptors = struct.unpack_from(f"<{2*item_count}I", view, descriptor_offset)
     for idx in range(item_count):
-        keys_offset, values_offset = descriptors[idx*2:(idx + 1)*2]
-        if idx != item_count - 1:
-            next_key_offset = descriptors[(idx + 1) * 2]
-        else:
-            # Use first value offset
-            next_key_offset = descriptors[1]
-        name = view[keys_offset:next_key_offset]
+        keys_data, values_offset = descriptors[idx*2:(idx + 1)*2]
+        key_offset = keys_data & 0x00FFFFFF
+        key_length = keys_data >> 24
+        name = view[key_offset:key_offset + key_length + 1]
         if name[-1] != 0:
             raise ValueError(f"Field {name} is not terminated.")
         name = str(name, 'utf-8').strip('\0')
@@ -231,13 +226,10 @@ def decode_map(view: memoryview) -> dict:
     field_descriptors = []
     descriptors = struct.unpack_from(f"<{2*item_count}I", view[5:])
     for idx in range(item_count):
-        keys_offset, values_offset = descriptors[idx*2:(idx + 1)*2]
-        if idx != item_count - 1:
-            next_key_offset = descriptors[(idx + 1) * 2]
-        else:
-            # Use first value offset
-            next_key_offset = descriptors[1]
-        name = view[keys_offset:next_key_offset]
+        keys_data, values_offset = descriptors[idx*2:(idx + 1)*2]
+        key_offset = keys_data & 0x00FFFFFF
+        key_length = keys_data >> 24
+        name = view[key_offset:key_offset + key_length + 1]
         if name[-1] != 0:
             raise ValueError(f"Field {name} is not terminated.")
         name = str(name, 'utf-8').strip('\0')

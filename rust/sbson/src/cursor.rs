@@ -19,14 +19,14 @@
 // SOFTWARE.
 
 use super::raw_cursor::{get_byte_array_at, RawCursor};
-use super::{CursorError, ElementTypeCode};
+use super::{CursorError, ElementTypeCode, PathSegment};
 use core::ffi::CStr;
 use core::ops::Range;
 
 /// An SBSON cursor over a buffer-type.
-/// 
+///
 /// The supplied buffer type can be, for example, any of `&[u8]`, `Arc<[u8]>`, `Rc<[u8]>`, etc.
-/// Beware of supplying `Vec<u8>` and the like, as creating sub-cursors may clone the entire buffer. 
+/// Beware of supplying `Vec<u8>` and the like, as creating sub-cursors may clone the entire buffer.
 #[derive(Debug, Clone)]
 pub struct Cursor<T: Clone + AsRef<[u8]>> {
     /// A reference to the entire top-level document
@@ -100,15 +100,41 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
         })
     }
 
-    pub fn get_key_by_index(&self, index: usize) -> Result<&str, CursorError> {
-        self.raw_cursor
-            .get_key_by_index(self.scoped_buffer(), index)
-    }
-
     /// Searches a map item by key, and return a cursor for that item.
     pub fn get_value_by_key(&self, key: &str) -> Result<Self, CursorError> {
         let (_index, cursor) = self.get_value_and_index_by_key(key)?;
         Ok(cursor)
+    }
+
+    pub fn goto<'a>(
+        &self,
+        path_segments: impl Iterator<Item = PathSegment<'a>>,
+    ) -> Result<Self, CursorError> {
+        let mut buffer = &self.buffer.as_ref()[self.range.clone()];
+        let mut raw_cursor = self.raw_cursor.clone();
+        let mut range = self.range.clone();
+        for segment in path_segments {
+            let (mut sub_range, sub_cursor) = match segment {
+                PathSegment::Key(key) => {
+                    let (_index, sub_range, sub_cursor) =
+                        raw_cursor.get_value_and_index_by_key(buffer, key)?;
+                    (sub_range, sub_cursor)
+                }
+                PathSegment::Index(index) => raw_cursor.get_value_by_index(buffer, index)?,
+            };
+
+            buffer = &buffer[sub_range.clone()];
+            raw_cursor = sub_cursor;
+
+            sub_range.start += range.start;
+            sub_range.end += range.start;
+            range = sub_range;
+        }
+        Ok(Cursor {
+            buffer: self.buffer.clone(),
+            range,
+            raw_cursor,
+        })
     }
 
     /// Searches a map item by key, and return the item's index and cursor.
@@ -127,6 +153,13 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
                 range,
             },
         ))
+    }
+
+    /// Returns the key of a key-value pair in map nodes by its index.
+    /// Note that the exact position of a certain key is implementation defined.
+    pub fn get_key_by_index(&self, index: usize) -> Result<&str, CursorError> {
+        self.raw_cursor
+            .get_key_by_index(self.scoped_buffer(), index)
     }
 
     pub fn get_bool(&self) -> Result<bool, CursorError> {
@@ -165,7 +198,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     }
 
     /// Returns a reference to the null-terminated string pointed to by the cursor.
-    /// 
+    ///
     /// The returned reference is lifetime-bound to the current cursor.
     /// If the cursor is not an owning-cursor, a reference bound to the backing storage
     /// can be receieved by calling `get_storage_cstr`.
@@ -183,7 +216,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     /// Try to parse the string as a UTF-8 string.
     /// SBSON spec requires strings to be valid UTF-8 sans-nul; if you suspect
     /// your document is non-conforming, use `get_cstr`.
-    /// 
+    ///
     /// The returned reference is lifetime-bound to the current cursor.
     /// If the cursor is not an owning-cursor, a reference bound to the backing storage
     /// can be receieved by calling `get_storage_str`.
@@ -193,6 +226,11 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
             .map_err(|_| CursorError::Utf8Error)
     }
 
+    /// Returns a reference to the payload of a binary node.
+    ///
+    /// The returned reference is lifetime-bound to the current cursor.
+    /// If the cursor is not an owning-cursor, a reference bound to the backing storage
+    /// can be receieved by calling `get_storage_binary`.
     pub fn get_binary(&self) -> Result<&[u8], CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::Binary)?;
@@ -203,12 +241,12 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     /// Iterate over the children of this map node.
     /// Malformed children are silently dropped.
     pub fn iter_map<'a>(
-        &'a self
+        &'a self,
     ) -> Result<impl Iterator<Item = (&'a str, Self)> + 'a, CursorError> {
         Ok(self
             .raw_cursor
             .iter_map(self.range.clone(), self.scoped_buffer())?
-            // Ignore 
+            // Ignore
             .flat_map(|kv| kv.ok())
             .flat_map(|(key, range)| {
                 Cursor::new_with_range(self.buffer.clone(), range)
@@ -218,7 +256,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     }
 
     /// Iterate over the children of this map node, returning borrowed cursors.
-    /// Malformed 
+    /// Malformed
     pub fn iter_map_borrowed<'a>(
         &'a self,
     ) -> Result<impl Iterator<Item = (&'a str, Cursor<&'a [u8]>)>, CursorError> {
@@ -254,19 +292,19 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
 impl<'data> Cursor<&'data [u8]> {
     /// Returns a reference to the null-terminated string pointed to by the cursor.
-    /// 
+    ///
     /// This reference is lifetime-bound to the backing storage referenced by this cursor,
     /// and may outlive the cursor.
     pub fn get_storage_cstr(&self) -> Result<&'data CStr, CursorError> {
         self.raw_cursor
             .ensure_element_type(ElementTypeCode::String)?;
 
-        // NOTE: Can also fail if there's an embedded null character; might want to use
-        // `from_bytes_until_nul` when stabilisied.
-        // https://github.com/rust-lang/rust/issues/95027
         let mut range = self.range.clone();
         // Skip the first element as it is the element type
         range.start += 1;
+        // NOTE: Can also fail if there's an embedded null character; might want to use
+        // `from_bytes_until_nul` when stabilisied.
+        // https://github.com/rust-lang/rust/issues/95027
         CStr::from_bytes_with_nul(&self.buffer.as_ref()[range])
             .map_err(|_| CursorError::UnterminatedString)
     }
@@ -274,12 +312,28 @@ impl<'data> Cursor<&'data [u8]> {
     /// Try to parse the string as a UTF-8 string.
     /// SBSON spec requires strings to be valid UTF-8 sans-nul; if you suspect
     /// your document is non-conforming, use `get_storage_cstr`.
-    /// 
+    ///
     /// This reference is lifetime-bound to the backing storage referenced by this cursor,
     /// and may outlive the cursor.
     pub fn get_storage_str(&self) -> Result<&'data str, CursorError> {
         self.get_storage_cstr()?
             .to_str()
             .map_err(|_| CursorError::Utf8Error)
+    }
+
+    /// Try to parse the string as a UTF-8 string.
+    /// SBSON spec requires strings to be valid UTF-8 sans-nul; if you suspect
+    /// your document is non-conforming, use `get_storage_cstr`.
+    ///
+    /// This reference is lifetime-bound to the backing storage referenced by this cursor,
+    /// and may outlive the cursor.
+    pub fn get_storage_binary(&self) -> Result<&'data [u8], CursorError> {
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Binary)?;
+
+        let mut range = self.range.clone();
+        // Skip the first element as it is the element type
+        range.start += 1;
+        Ok(&self.buffer.as_ref()[range])
     }
 }
