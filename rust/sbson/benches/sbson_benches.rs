@@ -87,6 +87,7 @@ fn bench_goto_item(c: &mut Criterion) {
     }
 }
 
+/// For each iteration, benchmark performing a goto for all items in the big list.
 fn bench_goto_all_items(c: &mut Criterion) {
     let item_names: Vec<_> = (0..8000).map(|i| format!("item_{i:04}")).collect();
     let mut group = c.benchmark_group("goto_all_items");
