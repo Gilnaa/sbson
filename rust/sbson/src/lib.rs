@@ -54,7 +54,6 @@ pub enum ElementTypeCode {
     Int64 = 0x12,
     UInt64 = 0x13,
     MapCHD = 0x20,
-    MapEytzinger = 0x21,
 }
 
 impl TryFrom<u8> for ElementTypeCode {
@@ -73,7 +72,6 @@ impl TryFrom<u8> for ElementTypeCode {
             x if x == ElementTypeCode::Int32 as u8 => ElementTypeCode::Int32,
             x if x == ElementTypeCode::Int64 as u8 => ElementTypeCode::Int64,
             x if x == ElementTypeCode::MapCHD as u8 => ElementTypeCode::MapCHD,
-            x if x == ElementTypeCode::MapEytzinger as u8 => ElementTypeCode::MapEytzinger,
             x => return Err(CursorError::InvalidElementType(x)),
         })
     }

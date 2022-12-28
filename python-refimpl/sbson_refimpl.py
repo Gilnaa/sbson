@@ -15,8 +15,6 @@ class EncodeOptions:
     # instead of the default binary tree.
     phf_threshold: int = PHF_THRESHOLD
 
-    use_eytzinger: bool = False
-
 
 DEFAULT_ENCODE_OPTIONS = EncodeOptions()
 
@@ -35,7 +33,6 @@ class ElementType(IntEnum):
     INT64 = 0x12
     UINT64 = 0x13
     MAP_PHF_CHD = 0x20
-    MAP_EYTZINGER = 0x21
 
 
 def encode(obj, options: EncodeOptions = DEFAULT_ENCODE_OPTIONS) -> bytes:
@@ -86,7 +83,7 @@ def decode(view: memoryview):
         return str(view[1:], 'utf-8').rstrip('\x00')
     elif element_type == ElementType.ARRAY:
         return decode_array(view)
-    elif element_type == ElementType.MAP or element_type == ElementType.MAP_EYTZINGER:
+    elif element_type == ElementType.MAP:
         return decode_map(view)
     elif element_type == ElementType.MAP_PHF_CHD:
         return decode_map_chd(view)
@@ -131,7 +128,8 @@ def _encode_map_chd(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -
 
 
 def _sort_eytzinger(kvs: typing.List[str]):
-    new_arr = [None] * (len(kvs) + 1)
+    new_arr = [None] * len(kvs)
+    # TODO: Ensure this sorts lexicographically and not anything smarter
     kvs.sort()
     i = 0
 
@@ -139,7 +137,7 @@ def _sort_eytzinger(kvs: typing.List[str]):
         nonlocal i
         if k <= len(kvs):
             _inner(2 * k)
-            new_arr[k] = kvs[i]
+            new_arr[k - 1] = kvs[i]
             i += 1
             _inner(2 * k + 1)
 
@@ -157,13 +155,8 @@ def encode_map(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> byt
         print(f"Encoding a PHF with {len(obj)} items (>= {options.phf_threshold})")
         return _encode_map_chd(obj, options=options)
 
-    if options.use_eytzinger:
-        element_type = ElementType.MAP_EYTZINGER
-        field_names = _sort_eytzinger(list(obj.keys()))[1:]
-    else:
-        # TODO: Ensure this sorts lexicographically and not anything smarter
-        element_type = ElementType.MAP
-        field_names = sorted(obj.keys())
+    element_type = ElementType.MAP
+    field_names = _sort_eytzinger(list(obj.keys()))
     field_values = [
         encode(obj[field_name], options=options)
         for field_name in field_names
