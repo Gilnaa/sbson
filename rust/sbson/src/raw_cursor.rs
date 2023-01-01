@@ -329,7 +329,6 @@ impl RawCursor {
         self_range: Range<usize>,
         buffer: &'a [u8],
     ) -> Result<MapIter<'a>, CursorError> {
-        self.ensure_element_type(ElementTypeCode::Map)?;
         Ok(MapIter {
             index: 0,
             max: self.child_count,
@@ -369,28 +368,15 @@ impl RawCursor {
 
 impl<'a> MapIter<'a> {
     fn get_item_at_index(&self) -> Result<(&'a str, Range<usize>), CursorError> {
-        let (key_offset, value_offset) =
-            get_u32_pair_at_offset(self.descriptors, MAP_DESCRIPTOR_SIZE * self.index as usize)
-                .unwrap();
-        let key_offset = key_offset as usize;
-        let value_offset = value_offset as usize;
 
-        let key_slice = self
-            .whole_buffer
-            .get(key_offset..)
-            .ok_or(CursorError::UnterminatedString)?;
-        let null_terminator =
-            memchr::memchr(0, key_slice).ok_or(CursorError::UnterminatedString)?;
-        let key = &self.whole_buffer[key_offset..key_offset + null_terminator];
+        let MapDescriptor { key_offset, key_length, value_offset } = get_map_descriptor(self.descriptors, self.index as usize)?;
+
+        let key = &self.whole_buffer[key_offset..key_offset + key_length];
         let key = core::str::from_utf8(key).map_err(|_| CursorError::Utf8Error)?;
 
         let next_value_offset = if self.index < self.max - 1 {
-            get_u32_pair_at_offset(
-                self.descriptors,
-                MAP_DESCRIPTOR_SIZE * (self.index as usize + 1),
-            )
-            .unwrap()
-            .1 as usize
+            let MapDescriptor { value_offset, .. } = get_map_descriptor(self.descriptors, self.index as usize + 1)?;
+            value_offset as usize
         } else {
             self.whole_buffer.len()
         };

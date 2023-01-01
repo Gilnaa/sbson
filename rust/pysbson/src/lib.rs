@@ -150,15 +150,22 @@ impl PyCursor {
 
     /// Query along the given path and return a cursor pointing to the specified node.
     fn goto(&self, path_segments: Vec<PathSegment>) -> PyResult<Self> {
-        let mut depth = 0;
-        let mut current_node = None;
-        for segment in path_segments {
-            let next_cursor = current_node.as_ref().unwrap_or(self).__getitem__(segment)?;
-            // TODO Return better error with depth+segment in it.
-            current_node = Some(next_cursor);
-            depth += 1;
-        }
-        current_node.ok_or(CursorError::KeyNotFound.into())
+        let current_node = match &self.cursor_impl {
+            CursorImpl::Generic(g) => g
+        };
+        let cursor = current_node.goto(path_segments.iter().map(|seg| match seg {
+                PathSegment::Key(k) => sbson::PathSegment::Key(k.as_str()),
+                PathSegment::Index(i) => sbson::PathSegment::Index(*i),
+        }))?;
+        
+        let mut new_path_segments = self.path_segments.clone();
+        new_path_segments.extend(path_segments);
+
+        let cursor = PyCursor {
+            path_segments: new_path_segments,
+            cursor_impl: CursorImpl::Generic(cursor),
+        };
+        Ok(cursor)
     }
 
     fn pythonize(&self, py: Python<'_>) -> PyResult<PyObject> {
@@ -174,7 +181,7 @@ impl PyCursor {
     fn keys(&self) -> Result<Vec<&str>, CursorError> {
         let v = match &self.cursor_impl {
             CursorImpl::Generic(g) => match g.get_element_type() {
-                ElementTypeCode::Map => g.iter_map()?.map(|(key, _cursor)| key).collect(),
+                ElementTypeCode::Map | ElementTypeCode::MapCHD => g.iter_map()?.map(|(key, _cursor)| key).collect(),
                 _ => vec![],
             },
             // CursorImpl::CachedMap(cache) => cache.children.keys().cloned().collect(),

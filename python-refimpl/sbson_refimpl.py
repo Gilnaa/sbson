@@ -94,7 +94,14 @@ def decode(view: memoryview):
 
 
 def _encode_map_chd(obj: typing.Dict[str, typing.Any], options: EncodeOptions) -> bytes:
-    map = phf.try_build_map(obj, 0x500)
+    for i in range(40):
+        map = phf.try_build_map(obj, 0x500 + i)
+        if map is not None:
+            break
+    if map is None:
+        print(":(((((")
+        import sys
+        sys.exit(1)
     field_values = [
         encode(value, options=options)
         for _field_name, value in map.key_values

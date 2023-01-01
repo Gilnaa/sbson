@@ -12,7 +12,7 @@ def main():
     _progname, input_path, output_path = sys.argv
     with open(input_path, 'r') as f:
         data = json.load(f)
-    data = sbson_refimpl.encode(data)
+    data = sbson_refimpl.encode(data, options=sbson_refimpl.EncodeOptions(phf_threshold=512))
     with open(output_path, 'wb') as f:
         f.write(data)
 
