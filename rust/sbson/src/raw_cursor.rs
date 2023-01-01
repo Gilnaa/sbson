@@ -360,9 +360,10 @@ impl RawCursor {
             .skip(1)
             .chain(Some(self_range.len() as u32));
 
+        let self_offset = self_range.start;
         Ok(start_offsets
             .zip(end_offsets)
-            .map(|(start, end)| start as usize..end as usize))
+            .map(move |(start, end)| self_offset + start as usize..self_offset + end as usize))
     }
 }
 

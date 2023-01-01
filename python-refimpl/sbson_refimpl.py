@@ -49,13 +49,13 @@ def encode(obj, options: EncodeOptions = DEFAULT_ENCODE_OPTIONS) -> bytes:
             payload = struct.pack("B", ElementType.FALSE)
     elif isinstance(obj, int):
         if obj > 2**63-1:
-            payload = struct.pack("<BQ", int(ElementType.UINT64), obj)
+            payload = struct.pack("<BQ", ElementType.UINT64, obj)
         elif obj > 2**32-1:
-            payload = struct.pack("<BI", int(ElementType.UINT32), obj)
+            payload = struct.pack("<BI", ElementType.UINT32, obj)
         elif obj < -(2**32-1):
-            payload = struct.pack("<Bi", int(ElementType.INT32), obj)
+            payload = struct.pack("<Bi", ElementType.INT32, obj)
         else:
-            payload = struct.pack("<Bq", int(ElementType.INT64), obj)
+            payload = struct.pack("<Bq", ElementType.INT64, obj)
     elif obj is None:
         payload = struct.pack("B", ElementType.NONE)
     # Must come after dict&str since they're also iterable.

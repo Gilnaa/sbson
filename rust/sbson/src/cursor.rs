@@ -197,6 +197,36 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
         )?))
     }
 
+    pub fn get_u32(&self) -> Result<u32, CursorError> {
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Int32)?;
+
+        Ok(u32::from_le_bytes(get_byte_array_at(
+            self.payload_scoped_buffer(),
+            0,
+        )?))
+    }
+
+    pub fn get_u64(&self) -> Result<u64, CursorError> {
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Int64)?;
+
+        Ok(u64::from_le_bytes(get_byte_array_at(
+            self.payload_scoped_buffer(),
+            0,
+        )?))
+    }
+
+    pub fn get_double(&self) -> Result<f64, CursorError> {
+        self.raw_cursor
+            .ensure_element_type(ElementTypeCode::Double)?;
+
+        Ok(f64::from_le_bytes(get_byte_array_at(
+            self.payload_scoped_buffer(),
+            0,
+        )?))
+    }
+
     /// Returns a reference to the null-terminated string pointed to by the cursor.
     ///
     /// The returned reference is lifetime-bound to the current cursor.
@@ -274,7 +304,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     pub fn iter_array(&self) -> Result<impl Iterator<Item = Cursor<&[u8]>>, CursorError> {
         Ok(self
             .raw_cursor
-            .iter_array(self.range.clone(), self.buffer.as_ref())?
+            .iter_array(self.range.clone(), self.scoped_buffer())?
             .flat_map(|range| Cursor::new_with_range(self.buffer.as_ref(), range).ok()))
     }
 

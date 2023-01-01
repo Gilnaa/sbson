@@ -211,9 +211,9 @@ fn pythonize(py: Python<'_>, cursor: Cursor<&[u8]>) -> PyResult<PyObject> {
         ElementTypeCode::False => false.into_py(py),
         ElementTypeCode::Int32 => cursor.get_i32()?.into_py(py),
         ElementTypeCode::Int64 => cursor.get_i64()?.into_py(py),
-        ElementTypeCode::UInt32 => unimplemented!(),
-        ElementTypeCode::UInt64 => unimplemented!(),
-        ElementTypeCode::Double => unimplemented!(),
+        ElementTypeCode::UInt32 => cursor.get_u32()?.into_py(py),
+        ElementTypeCode::UInt64 => cursor.get_u64()?.into_py(py),
+        ElementTypeCode::Double => cursor.get_double()?.into_py(py),
         ElementTypeCode::Binary => unimplemented!(),
     };
     Ok(value)
