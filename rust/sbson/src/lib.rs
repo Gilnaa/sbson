@@ -31,6 +31,8 @@ mod pyo3;
 pub use cursor::Cursor;
 #[cfg(feature = "serde")]
 mod serde;
+#[cfg(feature = "std")]
+pub mod serializer;
 
 #[cfg(feature = "serde")]
 pub use crate::serde::from_bytes;
