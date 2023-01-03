@@ -128,14 +128,13 @@ pub struct HashState {
     pub disps: Vec<(u32, u32)>,
     pub map: Vec<usize>,
 }
-fn try_generate_hash(entries: &[&str], key: u32) -> Option<HashState> {
+fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Option<HashState> {
     struct Bucket {
         idx: usize,
         keys: Vec<usize>,
     }
 
     let hashes: Vec<_> = entries
-        .iter()
         .map(|entry| phf_shared::hash(entry, &(key as u64)))
         .collect();
 
@@ -211,34 +210,18 @@ fn try_generate_hash(entries: &[&str], key: u32) -> Option<HashState> {
     })
 }
 
-fn serialize_chd<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
-    let (keys, values): (Vec<&str>, Vec<_>) = map.unzip();
-    // let hashes: Vec<_> = keys.iter().map(|key| phf_shared::hash(key.as_bytes(), &0)).collect();
-    let hash_state = try_generate_hash(&keys, 0x500).unwrap();
-    
-    let mut total_written = 0;
-    total_written += output.write(&[ElementTypeCode::MapCHD as u8])?;
-    total_written += output.write(&(keys.len() as u32).to_le_bytes())?;
-    for (d1, d2) in hash_state.disps.into_iter() {
-        total_written += output.write(&d1.to_le_bytes())?;
-        total_written += output.write(&d2.to_le_bytes())?;
-    }
-
-    let mut serialized_keys = Vec::<u8>::new();
+fn encode_kvs<W: Write>(kvs: &[(&str, &Value, usize)], options: &SerializationOptions, mut output: W, descriptors_offset: usize) -> std::io::Result<usize> {
     let mut serialized_values = Vec::<u8>::new();
 
-    let mut current_key_offset = total_written + 8 * keys.len();
-    let total_key_size: usize = keys.iter().map(|key| key.len() + 1).sum();
+    let mut current_key_offset = descriptors_offset + 8 * kvs.len();
+    let total_key_size: usize = kvs.iter().map(|(key, _value, _index)| key.len() + 1).sum();
     let mut current_value_offset = current_key_offset + total_key_size;
-    
-    for idx in hash_state.map.into_iter() {
-        let key = keys[idx];
-        let value = values[idx];
+    let mut total_written = 0;
+
+    for (key, value, _index) in kvs.iter() {
         let key_length = key.len();
 
         let value_length = value.serialize(options, &mut serialized_values)?;
-        serialized_keys.write(key.as_bytes())?;
-        serialized_keys.write(&[0u8])?;
 
         let key_data = ((key_length as u32) << 24) | (current_key_offset as u32);
         total_written += output.write(&key_data.to_le_bytes())?;
@@ -248,57 +231,60 @@ fn serialize_chd<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, op
         current_value_offset += value_length;
     }
 
-    total_written += output.write(serialized_keys.as_ref())?;
+    for (key, _value, _index) in kvs.iter() {
+        total_written += output.write(key.as_bytes())?;
+        total_written += output.write(&[0u8])?;
+    }
     total_written += output.write(serialized_values.as_ref())?;
     
     Ok(total_written)
 }
 
-fn serialize_eytzinger<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
-    let mut kvs: Vec<_> = map.collect();
-    kvs.sort_by_key(|(key, _value)| *key);
-
-    let mut indicies = vec![0; kvs.len()];
-    fn eytzinger(indicies: &mut [usize], k: usize, i: &mut usize) {
-        if k <= indicies.len() {
-            eytzinger(indicies, 2 * k, i);
-            indicies[k - 1] = *i;
-            *i += 1;
-            eytzinger(indicies, 2 * k + 1, i);
+fn serialize_chd<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
+    let kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
+    let mut i = 0;
+    let hash_state = loop {
+        if let Some(hash_state) = try_generate_hash(kvs.iter().map(|(k, _v)| *k), 0x500+i) {
+            break hash_state
         }
-        
-    }
-    eytzinger(&mut indicies, 1, &mut 0);
+        i += 1;
+        if i > 10 {
+            Err(std::io::ErrorKind::InvalidData)?;
+        }
+    };
+    let kvs: Vec<_> = hash_state.map.iter().map(|source_index| {
+        let (k, v) = kvs[*source_index];
+        (k, v, 0)
+    }).collect();
     
+    let mut total_written = 0;
+    total_written += output.write(&[ElementTypeCode::MapCHD as u8])?;
+    total_written += output.write(&(kvs.len() as u32).to_le_bytes())?;
+    total_written += output.write(&hash_state.key.to_le_bytes())?;
+    println!("{:?}", hash_state.disps);
+    for (d1, d2) in hash_state.disps.into_iter() {
+        total_written += output.write(&d1.to_le_bytes())?;
+        total_written += output.write(&d2.to_le_bytes())?;
+    }
+    
+    total_written += encode_kvs(&kvs, options, output, total_written)?;
+
+    Ok(total_written)
+}
+
+fn serialize_eytzinger<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
+    let mut kvs: Vec<_> = map.map(|(k, v)| (k, v, 0usize)).collect();
+    kvs.sort_by_key(|(key, _value, _index)| *key);
+    for (idx, idx1) in eytzinger::PermutationGenerator::new(kvs.len()).enumerate() {
+        kvs[idx].2 = idx1;
+    }
+    kvs.sort_by_key(|(_key, _value, index)| *index);
+
     let mut total_written = 0;
     total_written += output.write(&[ElementTypeCode::Map as u8])?;
     total_written += output.write(&(kvs.len() as u32).to_le_bytes())?;
 
-    let mut serialized_keys = Vec::<u8>::new();
-    let mut serialized_values = Vec::<u8>::new();
-
-    let mut current_key_offset = total_written + 8 * kvs.len();
-    let total_key_size: usize = kvs.iter().map(|(key, _value)| key.len() + 1).sum();
-    let mut current_value_offset = current_key_offset + total_key_size;
-    
-    for idx in indicies {
-        let (key, value) = kvs[idx];
-        let key_length = key.len();
-
-        let value_length = value.serialize(options, &mut serialized_values)?;
-        serialized_keys.write(key.as_bytes())?;
-        serialized_keys.write(&[0u8])?;
-
-        let key_data = ((key_length as u32) << 24) | (current_key_offset as u32);
-        total_written += output.write(&key_data.to_le_bytes())?;
-        total_written += output.write(&(current_value_offset as u32).to_le_bytes())?;
-
-        current_key_offset += key_length + 1;
-        current_value_offset += value_length;
-    }
-
-    total_written += output.write(serialized_keys.as_ref())?;
-    total_written += output.write(serialized_values.as_ref())?;
+    total_written += encode_kvs(&kvs, options, output, total_written)?;
 
     Ok(total_written)
 }

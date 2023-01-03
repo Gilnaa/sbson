@@ -199,7 +199,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
     pub fn get_u32(&self) -> Result<u32, CursorError> {
         self.raw_cursor
-            .ensure_element_type(ElementTypeCode::Int32)?;
+            .ensure_element_type(ElementTypeCode::UInt32)?;
 
         Ok(u32::from_le_bytes(get_byte_array_at(
             self.payload_scoped_buffer(),
@@ -209,7 +209,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
     pub fn get_u64(&self) -> Result<u64, CursorError> {
         self.raw_cursor
-            .ensure_element_type(ElementTypeCode::Int64)?;
+            .ensure_element_type(ElementTypeCode::UInt64)?;
 
         Ok(u64::from_le_bytes(get_byte_array_at(
             self.payload_scoped_buffer(),

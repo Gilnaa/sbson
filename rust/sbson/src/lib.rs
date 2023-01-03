@@ -73,6 +73,8 @@ impl TryFrom<u8> for ElementTypeCode {
             x if x == ElementTypeCode::None as u8 => ElementTypeCode::None,
             x if x == ElementTypeCode::Int32 as u8 => ElementTypeCode::Int32,
             x if x == ElementTypeCode::Int64 as u8 => ElementTypeCode::Int64,
+            x if x == ElementTypeCode::UInt32 as u8 => ElementTypeCode::UInt32,
+            x if x == ElementTypeCode::UInt64 as u8 => ElementTypeCode::UInt64,
             x if x == ElementTypeCode::MapCHD as u8 => ElementTypeCode::MapCHD,
             x => return Err(CursorError::InvalidElementType(x)),
         })
