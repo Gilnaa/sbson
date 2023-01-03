@@ -27,13 +27,22 @@ use core::ops::Range;
 ///
 /// The supplied buffer type can be, for example, any of `&[u8]`, `Arc<[u8]>`, `Rc<[u8]>`, etc.
 /// Beware of supplying `Vec<u8>` and the like, as creating sub-cursors may clone the entire buffer.
-#[derive(Debug, Clone)]
-pub struct Cursor<T: Clone + AsRef<[u8]>> {
+#[derive(Clone)]
+pub struct Cursor<T> {
     /// A reference to the entire top-level document
     pub(crate) buffer: T,
     /// The range of the current pointed-to element inside the buffer.
     pub(crate) range: Range<usize>,
     pub(crate) raw_cursor: RawCursor,
+}
+
+impl<T> std::fmt::Debug for Cursor<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cursor")
+         .field("range", &self.range)
+         .field("raw_cursor", &self.raw_cursor)
+         .finish()
+    }
 }
 
 impl<T: Clone + AsRef<[u8]>> Cursor<T> {

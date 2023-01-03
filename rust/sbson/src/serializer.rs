@@ -102,22 +102,20 @@ impl Serialize for Value {
 
 impl Serialize for &[Value] {
     fn serialize<W: Write>(&self, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {       
-        let mut offset = 1 + 4 * self.len();
         let mut values = Vec::<u8>::new();
-        let mut descriptors = Vec::new();
-
-        for item in self.iter() {
-            descriptors.push(offset as u32);
-            offset += item.serialize(options, &mut values)?;
-        }
-
+        
         let mut total = 0;
         total += output.write(&[ElementTypeCode::Array as u8])?;
         total += output.write(&(self.len() as u32).to_le_bytes())?;
-        for descriptor in descriptors {
-            total += output.write(&descriptor.to_le_bytes())?;
+        
+        let mut offset = total + 4 * self.len();
+        for item in self.iter() {
+            total += output.write(&(offset as u32).to_le_bytes())?;
+            offset += item.serialize(options, &mut values)?;
         }
+
         total += output.write(values.as_slice())?;
+
         Ok(total)
     }
 }
@@ -261,7 +259,6 @@ fn serialize_chd<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, op
     total_written += output.write(&[ElementTypeCode::MapCHD as u8])?;
     total_written += output.write(&(kvs.len() as u32).to_le_bytes())?;
     total_written += output.write(&hash_state.key.to_le_bytes())?;
-    println!("{:?}", hash_state.disps);
     for (d1, d2) in hash_state.disps.into_iter() {
         total_written += output.write(&d1.to_le_bytes())?;
         total_written += output.write(&d2.to_le_bytes())?;
