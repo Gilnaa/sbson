@@ -121,16 +121,17 @@ mod tests {
     fn test_impl_sanity<T: Clone + AsRef<[u8]>>(cursor: Cursor<T>) {
         assert_eq!(cursor.get_children_count(), 4);
 
-        // Should be the same because "3" is the first key, lexicographically.
-        let three_by_name = cursor.get_value_by_key("3".into()).unwrap();
-        assert_eq!(three_by_name.get_binary(), Ok(&b"beep boop"[..]));
+        let three = cursor.get_value_by_key("3").unwrap();
+        let blarg = cursor.get_value_by_key("BLARG").unwrap();
+        let florp = cursor.get_value_by_key("FLORP").unwrap();
+        let help_me = cursor
+            .get_value_by_key("help me i'm trapped in a format factory help me before they")
+            .unwrap();
+
+        assert_eq!(three.get_binary(), Ok(&b"beep boop"[..]));
 
         // Query ".BLARG[0]"
-        let blarg_0 = cursor
-            .get_value_by_key("BLARG")
-            .unwrap()
-            .get_value_by_index(0)
-            .unwrap();
+        let blarg_0 = blarg.get_value_by_index(0).unwrap();
         assert_eq!(blarg_0.get_i64(), Ok(1));
 
         // Query ".BLARG[1]", but drop the intermediary cursor
@@ -141,27 +142,16 @@ mod tests {
         };
         assert_eq!(blarg_1.get_i64(), Ok(2));
 
-        // Query ".FLORP.X"
-        let florp_x = cursor
-            .get_value_by_key("FLORP")
-            .unwrap()
-            .get_value_by_key("X")
-            .unwrap();
-        assert_eq!(florp_x.get_i64(), Ok(0xFF));
-
-        let blarg = cursor.get_value_by_key("BLARG").unwrap();
         assert_eq!(blarg.get_value_by_index(2).unwrap().get_bool(), Ok(true));
         assert_eq!(blarg.get_value_by_index(3).unwrap().get_bool(), Ok(false));
         assert_eq!(blarg.get_value_by_index(4).unwrap().get_none(), Ok(()));
 
+        // Query ".FLORP.X"
+        let florp_x = florp.get_value_by_key("X").unwrap();
+        assert_eq!(florp_x.get_i64(), Ok(0xFF));
+
         // Query the last parameter
-        assert_eq!(
-            cursor
-                .get_value_by_key("help me i'm trapped in a format factory help me before they")
-                .unwrap()
-                .get_str(),
-            Ok("...")
-        );
+        assert_eq!(help_me.get_str(), Ok("..."));
     }
 
     #[test]

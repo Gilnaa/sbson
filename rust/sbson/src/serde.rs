@@ -34,7 +34,7 @@ impl<'de> Deserializer<'de> {
 
 impl std::fmt::Display for CursorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        <CursorError as Debug>::fmt(&self, f)
+        <CursorError as Debug>::fmt(self, f)
     }
 }
 
@@ -120,7 +120,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
         visitor.visit_bytes(self.cursor.get_binary()?)
     }
 
-    fn deserialize_seq<V>(mut self, visitor: V) -> Result<V::Value>
+    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
     where
         V: Visitor<'de>,
     {
@@ -130,10 +130,7 @@ impl<'de, 'a> serde::de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 actual: element_type,
             });
         }
-        visitor.visit_seq(ArrayIteator {
-            de: &mut self,
-            index: 0,
-        })
+        visitor.visit_seq(ArrayIteator { de: self, index: 0 })
     }
 
     fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>

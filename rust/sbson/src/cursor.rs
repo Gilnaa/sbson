@@ -279,9 +279,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
     /// Iterate over the children of this map node.
     /// Malformed children are silently dropped.
-    pub fn iter_map<'a>(
-        &'a self,
-    ) -> Result<impl Iterator<Item = (&'a str, Self)> + 'a, CursorError> {
+    pub fn iter_map(&self) -> Result<impl Iterator<Item = (&str, Self)>, CursorError> {
         Ok(self
             .raw_cursor
             .iter_map(self.range.clone(), self.scoped_buffer())?
@@ -295,10 +293,10 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     }
 
     /// Iterate over the children of this map node, returning borrowed cursors.
-    /// Malformed
-    pub fn iter_map_borrowed<'a>(
-        &'a self,
-    ) -> Result<impl Iterator<Item = (&'a str, Cursor<&'a [u8]>)>, CursorError> {
+    /// Malformed children are silently dropped.
+    pub fn iter_map_borrowed(
+        &self,
+    ) -> Result<impl Iterator<Item = (&str, Cursor<&[u8]>)>, CursorError> {
         Ok(self
             .raw_cursor
             .iter_map(self.range.clone(), self.scoped_buffer())?
@@ -310,6 +308,8 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
             }))
     }
 
+    /// Iterate over the items of this array node.
+    /// Malformed or descriptors will be silently dropped.
     pub fn iter_array(&self) -> Result<impl Iterator<Item = Cursor<&[u8]>>, CursorError> {
         Ok(self
             .raw_cursor
@@ -344,8 +344,7 @@ impl<'data> Cursor<&'data [u8]> {
         // NOTE: Can also fail if there's an embedded null character; might want to use
         // `from_bytes_until_nul` when stabilisied.
         // https://github.com/rust-lang/rust/issues/95027
-        CStr::from_bytes_with_nul(&self.buffer.as_ref()[range])
-            .map_err(|_| CursorError::UnterminatedString)
+        CStr::from_bytes_with_nul(&self.buffer[range]).map_err(|_| CursorError::UnterminatedString)
     }
 
     /// Try to parse the string as a UTF-8 string.
@@ -373,6 +372,6 @@ impl<'data> Cursor<&'data [u8]> {
         let mut range = self.range.clone();
         // Skip the first element as it is the element type
         range.start += 1;
-        Ok(&self.buffer.as_ref()[range])
+        Ok(&self.buffer[range])
     }
 }

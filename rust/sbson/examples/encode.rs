@@ -22,6 +22,10 @@ fn main() {
     value.serialize(&options, &mut output).unwrap();
     let sb_end = std::time::Instant::now();
 
-    eprintln!("{:?} {:?}", js_end.duration_since(js_start), sb_end.duration_since(sb_start));
+    eprintln!(
+        "{:?} {:?}",
+        js_end.duration_since(js_start),
+        sb_end.duration_since(sb_start)
+    );
     std::fs::write(&foo[2], output).unwrap();
 }

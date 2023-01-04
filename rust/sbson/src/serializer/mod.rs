@@ -48,9 +48,7 @@ macro_rules! serialize_integer {
                 _options: &SerializationOptions,
                 output: &mut Vec<u8>,
             ) -> std::io::Result<usize> {
-                output.write(&[$type_code as u8])?;
-                output.write(&self.to_le_bytes())?;
-                Ok(1 + self.to_le_bytes().len())
+                Ok(output.write(&[$type_code as u8])? + output.write(&self.to_le_bytes())?)
             }
         }
     };
@@ -250,7 +248,7 @@ fn encode_kvs<V: Serialize>(
         current_value_offset += value_length;
     }
 
-    (&mut output[absolute_descriptor_offset..absolute_descriptor_offset + total_descriptor_size])
+    output[absolute_descriptor_offset..absolute_descriptor_offset + total_descriptor_size]
         .copy_from_slice(&descriptors);
 
     Ok(total_written)
