@@ -124,7 +124,7 @@ impl Serialize for Value {
     }
 }
 
-impl Serialize for &[Value] {
+impl<T: Serialize> Serialize for &[T] {
     fn serialize<W: Write>(
         &self,
         options: &SerializationOptions,
@@ -290,9 +290,7 @@ fn serialize_chd<'a, W: Write>(
     let kvs: Vec<_> = hash_state
         .map
         .iter()
-        .map(|source_index| {
-            kvs[*source_index]
-        })
+        .map(|source_index| kvs[*source_index])
         .collect();
 
     let mut total_written = 0;
@@ -318,9 +316,7 @@ fn serialize_eytzinger<'a, W: Write>(
     kvs.sort_by_key(|(key, _value)| *key);
 
     let kvs: Vec<_> = eytzinger::PermutationGenerator::new(kvs.len())
-        .map(|source_index| {
-            kvs[source_index]
-        })
+        .map(|source_index| kvs[source_index])
         .collect();
 
     let mut total_written = 0;
@@ -359,5 +355,40 @@ impl Serialize for serde_json::Map<String, Value> {
         } else {
             serialize_eytzinger(kvs, options, output)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_serialized_equals<T: Serialize>(value: T, expected: &[u8]) {
+        let mut buf = Vec::<u8>::new();
+
+        buf.clear();
+        value
+            .serialize(&SerializationOptions::default(), &mut buf)
+            .unwrap();
+        assert_eq!(buf.as_slice(), expected);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_primitive_serialization() {
+        assert_serialized_equals(1f64,                      b"\x01\x00\x00\x00\x00\x00\x00\xf0\x3f");
+        assert_serialized_equals(false,                     b"\x08");
+        assert_serialized_equals(true,                      b"\x09");
+        assert_serialized_equals(-2i32,                     b"\x10\xFE\xFF\xFF\xFF");
+        assert_serialized_equals(0xAABBCCDDu32,             b"\x11\xDD\xCC\xBB\xAA");
+        assert_serialized_equals(-2i64,                     b"\x12\xFE\xFF\xFF\xFF\xFF\xFF\xFF\xFF");
+        assert_serialized_equals(0x00AA00BB00CC00DDu64,     b"\x13\xDD\x00\xCC\x00\xBB\x00\xAA\x00");
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_array_serialization() {
+        assert_serialized_equals(&[false][..],          b"\x04\x01\x00\x00\x00\x09\x00\x00\x00\x08");
+        assert_serialized_equals(&[true][..],           b"\x04\x01\x00\x00\x00\x09\x00\x00\x00\x09");
+        assert_serialized_equals(&[true, false][..],    b"\x04\x02\x00\x00\x00\x0D\x00\x00\x00\x0E\x00\x00\x00\x09\x08");
     }
 }

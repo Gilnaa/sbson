@@ -56,6 +56,8 @@ def encode(obj, options: EncodeOptions = DEFAULT_ENCODE_OPTIONS) -> bytes:
             payload = struct.pack("<Bi", ElementType.INT32, obj)
         else:
             payload = struct.pack("<Bq", ElementType.INT64, obj)
+    elif isinstance(obj, float):
+        payload = struct.pack("<Bd", ElementType.DOUBLE, obj)
     elif obj is None:
         payload = struct.pack("B", ElementType.NONE)
     # Must come after dict&str since they're also iterable.
