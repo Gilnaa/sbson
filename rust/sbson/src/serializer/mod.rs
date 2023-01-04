@@ -23,18 +23,18 @@ impl Default for SerializationOptions {
 }
 
 pub trait Serialize {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         options: &SerializationOptions,
-        output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize>;
 }
 
 impl<T: Serialize> Serialize for &T {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         options: &SerializationOptions,
-        output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         (*self).serialize(options, output)
     }
@@ -43,10 +43,10 @@ impl<T: Serialize> Serialize for &T {
 macro_rules! serialize_integer {
     ($integer_ty:ty, $type_code:expr) => {
         impl Serialize for $integer_ty {
-            fn serialize<W: Write>(
+            fn serialize(
                 &self,
                 _options: &SerializationOptions,
-                mut output: W,
+                output: &mut Vec<u8>,
             ) -> std::io::Result<usize> {
                 output.write(&[$type_code as u8])?;
                 output.write(&self.to_le_bytes())?;
@@ -63,10 +63,10 @@ serialize_integer!(i32, ElementTypeCode::Int32);
 serialize_integer!(f64, ElementTypeCode::Double);
 
 impl Serialize for &str {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         _options: &SerializationOptions,
-        mut output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         let mut total = 0;
         total += output.write(&[ElementTypeCode::String as u8])?;
@@ -77,10 +77,10 @@ impl Serialize for &str {
 }
 
 impl Serialize for bool {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         _options: &SerializationOptions,
-        mut output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         output.write(&[if *self {
             ElementTypeCode::True
@@ -91,10 +91,10 @@ impl Serialize for bool {
 }
 
 impl<T: Serialize> Serialize for &[T] {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         options: &SerializationOptions,
-        mut output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         let mut values = Vec::<u8>::new();
 
@@ -202,45 +202,59 @@ fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Op
     })
 }
 
-fn encode_kvs<W: Write, V: Serialize>(
+/// Encodes the specified key-value pairs in the order given.
+/// The output is appended with all of their descriptors, all of their keys,
+/// and then finally with all of the values.
+/// 
+/// The offsets in the descriptors are calculated relative to `descriptors_offset`,
+/// which includes the size of all elements prior to the data encoded by this function.
+/// In other words, this 
+fn encode_kvs<V: Serialize>(
     kvs: &[&(&str, V)],
     options: &SerializationOptions,
-    mut output: W,
+    output: &mut Vec<u8>,
     descriptors_offset: usize,
 ) -> std::io::Result<usize> {
-    let mut serialized_values = Vec::<u8>::new();
-
-    let mut current_key_offset = descriptors_offset + 8 * kvs.len();
+    let total_descriptor_size = 8 * kvs.len();
+    let mut current_key_offset = descriptors_offset + total_descriptor_size;
     let total_key_size: usize = kvs.iter().map(|(key, _value)| key.len() + 1).sum();
     let mut current_value_offset = current_key_offset + total_key_size;
     let mut total_written = 0;
 
+    // Save the current end of the buffer so we know where to return to later.
+    let absolute_descriptor_offset = output.len();
+    output.extend(std::iter::repeat(0u8).take(total_descriptor_size));
+    total_written += total_descriptor_size;
+    let mut descriptors = Vec::with_capacity(total_descriptor_size);
+    
+    for (key, _value) in kvs.iter() {
+        total_written += output.write(key.as_bytes())?;
+        total_written += output.write(&[0u8])?;
+    }
+
     for (key, value) in kvs.iter() {
         let key_length = key.len();
 
-        let value_length = value.serialize(options, &mut serialized_values)?;
+        let value_length = value.serialize(options, output)?;
+        total_written += value_length;
 
         let key_data = ((key_length as u32) << 24) | (current_key_offset as u32);
-        total_written += output.write(&key_data.to_le_bytes())?;
-        total_written += output.write(&(current_value_offset as u32).to_le_bytes())?;
+        descriptors.extend_from_slice(&key_data.to_le_bytes());
+        descriptors.extend_from_slice(&(current_value_offset as u32).to_le_bytes());
 
         current_key_offset += key_length + 1;
         current_value_offset += value_length;
     }
 
-    for (key, _value) in kvs.iter() {
-        total_written += output.write(key.as_bytes())?;
-        total_written += output.write(&[0u8])?;
-    }
-    total_written += output.write(serialized_values.as_ref())?;
+    (&mut output[absolute_descriptor_offset..absolute_descriptor_offset+total_descriptor_size]).copy_from_slice(&descriptors);
 
     Ok(total_written)
 }
 
-fn serialize_chd<'a, W: Write, V: Serialize>(
+fn serialize_chd<'a, V: Serialize>(
     map: impl Iterator<Item = (&'a str, V)>,
     options: &SerializationOptions,
-    mut output: W,
+    output: &mut Vec<u8>,
 ) -> std::io::Result<usize> {
     let kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
     let mut i = 0;
@@ -273,10 +287,10 @@ fn serialize_chd<'a, W: Write, V: Serialize>(
     Ok(total_written)
 }
 
-fn serialize_eytzinger<'a, W: Write, V: Serialize>(
+fn serialize_eytzinger<'a, V: Serialize>(
     map: impl Iterator<Item = (&'a str, V)>,
     options: &SerializationOptions,
-    mut output: W,
+    output: &mut Vec<u8>,
 ) -> std::io::Result<usize> {
     let mut kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
     kvs.sort_by_key(|(key, _value)| *key);
@@ -295,10 +309,10 @@ fn serialize_eytzinger<'a, W: Write, V: Serialize>(
 }
 
 impl<K: AsRef<str>, V: Serialize, HS> Serialize for HashMap<K, V, HS> {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         options: &SerializationOptions,
-        output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         let kvs = self.iter().map(|(k, v)| (k.as_ref(), v));
         if self.len() >= options.chd_threshold {

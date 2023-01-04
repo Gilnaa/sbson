@@ -3,10 +3,10 @@ use crate::{ElementTypeCode, serializer::{Serialize, SerializationOptions, seria
 use serde_json::Value;
 
 impl Serialize for serde_json::Map<String, Value> {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         options: &SerializationOptions,
-        output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         let kvs = self.iter().map(|(k, v)| (k.as_ref(), v));
         if self.len() >= options.chd_threshold {
@@ -18,10 +18,10 @@ impl Serialize for serde_json::Map<String, Value> {
 }
 
 impl Serialize for Value {
-    fn serialize<W: Write>(
+    fn serialize(
         &self,
         options: &SerializationOptions,
-        mut output: W,
+        output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
         match self {
             Value::Null => output.write(&[ElementTypeCode::None as u8]),
