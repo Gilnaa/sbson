@@ -1,6 +1,9 @@
-use std::io::Write;
-use crate::{ElementTypeCode, serializer::{Serialize, SerializationOptions, serialize_chd, serialize_eytzinger}};
+use crate::{
+    serializer::{serialize_chd, serialize_eytzinger, SerializationOptions, Serialize},
+    ElementTypeCode,
+};
 use serde_json::Value;
+use std::io::Write;
 
 impl Serialize for serde_json::Map<String, Value> {
     fn serialize(

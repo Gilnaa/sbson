@@ -202,22 +202,26 @@ fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Op
     })
 }
 
-/// Encodes the specified key-value pairs in the order given.
-/// The output is appended with all of their descriptors, all of their keys,
-/// and then finally with all of the values.
-/// 
+/// Encodes the specified `key_value_pairs` in the order given into `output`.
+/// The output is appended with all of their descriptors, followed by their keys.
+/// Finally, each of the values is serialized into the `output`.
+///
 /// The offsets in the descriptors are calculated relative to `descriptors_offset`,
 /// which includes the size of all elements prior to the data encoded by this function.
-/// In other words, this 
+///
+/// In other words, this parameter described the amount of bytes that were already written as part of this node.
 fn encode_kvs<V: Serialize>(
-    kvs: &[&(&str, V)],
+    key_value_pairs: &[&(&str, V)],
     options: &SerializationOptions,
     output: &mut Vec<u8>,
     descriptors_offset: usize,
 ) -> std::io::Result<usize> {
-    let total_descriptor_size = 8 * kvs.len();
+    let total_descriptor_size = 8 * key_value_pairs.len();
     let mut current_key_offset = descriptors_offset + total_descriptor_size;
-    let total_key_size: usize = kvs.iter().map(|(key, _value)| key.len() + 1).sum();
+    let total_key_size: usize = key_value_pairs
+        .iter()
+        .map(|(key, _value)| key.len() + 1)
+        .sum();
     let mut current_value_offset = current_key_offset + total_key_size;
     let mut total_written = 0;
 
@@ -226,13 +230,13 @@ fn encode_kvs<V: Serialize>(
     output.extend(std::iter::repeat(0u8).take(total_descriptor_size));
     total_written += total_descriptor_size;
     let mut descriptors = Vec::with_capacity(total_descriptor_size);
-    
-    for (key, _value) in kvs.iter() {
+
+    for (key, _value) in key_value_pairs.iter() {
         total_written += output.write(key.as_bytes())?;
         total_written += output.write(&[0u8])?;
     }
 
-    for (key, value) in kvs.iter() {
+    for (key, value) in key_value_pairs.iter() {
         let key_length = key.len();
 
         let value_length = value.serialize(options, output)?;
@@ -246,7 +250,8 @@ fn encode_kvs<V: Serialize>(
         current_value_offset += value_length;
     }
 
-    (&mut output[absolute_descriptor_offset..absolute_descriptor_offset+total_descriptor_size]).copy_from_slice(&descriptors);
+    (&mut output[absolute_descriptor_offset..absolute_descriptor_offset + total_descriptor_size])
+        .copy_from_slice(&descriptors);
 
     Ok(total_written)
 }
@@ -325,6 +330,8 @@ impl<K: AsRef<str>, V: Serialize, HS> Serialize for HashMap<K, V, HS> {
 
 #[cfg(test)]
 mod tests {
+    use crate::Cursor;
+
     use super::*;
 
     fn assert_serialized_equals<T: Serialize>(value: T, expected: &[u8]) {
@@ -355,5 +362,56 @@ mod tests {
         assert_serialized_equals(&[false][..],          b"\x04\x01\x00\x00\x00\x09\x00\x00\x00\x08");
         assert_serialized_equals(&[true][..],           b"\x04\x01\x00\x00\x00\x09\x00\x00\x00\x09");
         assert_serialized_equals(&[true, false][..],    b"\x04\x02\x00\x00\x00\x0D\x00\x00\x00\x0E\x00\x00\x00\x09\x08");
+    }
+
+    /// Test a super simple map to make sure it vaguely generates into
+    /// our expected format.
+    ///
+    /// More complicated maps are tested elsewhere.
+    #[test]
+    fn test_simple_map_serialization() {
+        let map = HashMap::from([("key", true)]);
+        assert_serialized_equals(
+            map,
+            b"\x03\x01\x00\x00\x00\x0D\x00\x00\x03\x11\x00\x00\x00key\x00\x09",
+        )
+    }
+
+    /// Maps are too complex to write by hand, so instead of creating a test vector,
+    /// we serialize an object and test it using a cursor.
+    #[test]
+    fn test_map_serialization() {
+        // Perform the test for both CHD and eytzinger representations.
+        let option_sets = [
+            SerializationOptions { chd_threshold: 500 },
+            SerializationOptions {
+                chd_threshold: 1500,
+            },
+        ];
+
+        for options in option_sets {
+            // Serialize
+            let mut map = HashMap::new();
+            for i in 0..1000u32 {
+                map.insert(format!("item_{i}"), i);
+            }
+
+            let mut buf = vec![];
+            map.serialize(&options, &mut buf).unwrap();
+
+            let cursor = Cursor::new(&buf[..]).unwrap();
+            // Test iteration
+            let mut reconstructed_map = HashMap::new();
+            for (k, v) in cursor.iter_map().unwrap() {
+                reconstructed_map.insert(k.to_string(), v.get_u32().unwrap());
+            }
+            assert_eq!(map, reconstructed_map);
+
+            // Test random access
+            for (k, v) in map.iter() {
+                let value_cursor = cursor.get_value_by_key(&k).unwrap();
+                assert_eq!(value_cursor.get_u32().unwrap(), *v);
+            }
+        }
     }
 }
