@@ -1,12 +1,12 @@
-use std::io::Write;
-use std::collections::HashMap;
 use super::ElementTypeCode;
+use std::collections::HashMap;
+use std::io::Write;
 
 #[derive(Clone, Debug)]
 pub struct SerializationOptions {
     /// Determines the minimum amount of map elements that will trigger CHD generation
     /// instead of using a binary search tree.
-    /// 
+    ///
     /// CHD is perfect-hashing-function algorithm that is faster to lookup,
     /// but it takes more time to generate and makse the output larger.
     pub chd_threshold: usize,
@@ -14,12 +14,18 @@ pub struct SerializationOptions {
 
 impl Default for SerializationOptions {
     fn default() -> Self {
-        Self { chd_threshold: 8000 }
+        Self {
+            chd_threshold: 8000,
+        }
     }
 }
 
 pub trait Serialize {
-    fn serialize<W: Write>(&self, options: &SerializationOptions, output: W) -> std::io::Result<usize>;
+    fn serialize<W: Write>(
+        &self,
+        options: &SerializationOptions,
+        output: W,
+    ) -> std::io::Result<usize>;
 }
 
 // /// Represents any valid JSON value.
@@ -41,12 +47,16 @@ use serde_json::Value;
 macro_rules! serialize_integer {
     ($integer_ty:ty, $type_code:expr) => {
         impl Serialize for $integer_ty {
-            fn serialize<W: Write>(&self, _options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
+            fn serialize<W: Write>(
+                &self,
+                _options: &SerializationOptions,
+                mut output: W,
+            ) -> std::io::Result<usize> {
                 output.write(&[$type_code as u8])?;
                 output.write(&self.to_le_bytes())?;
                 Ok(1 + self.to_le_bytes().len())
             }
-        }        
+        }
     };
 }
 
@@ -57,7 +67,11 @@ serialize_integer!(i32, ElementTypeCode::Int32);
 serialize_integer!(f64, ElementTypeCode::Double);
 
 impl Serialize for &str {
-    fn serialize<W: Write>(&self, _options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
+    fn serialize<W: Write>(
+        &self,
+        _options: &SerializationOptions,
+        mut output: W,
+    ) -> std::io::Result<usize> {
         let mut total = 0;
         total += output.write(&[ElementTypeCode::String as u8])?;
         total += output.write(self.as_bytes())?;
@@ -67,15 +81,25 @@ impl Serialize for &str {
 }
 
 impl Serialize for bool {
-    fn serialize<W: Write>(&self, _options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
-        output.write(&[
-            if *self { ElementTypeCode::True } else { ElementTypeCode::False } as u8
-        ])
+    fn serialize<W: Write>(
+        &self,
+        _options: &SerializationOptions,
+        mut output: W,
+    ) -> std::io::Result<usize> {
+        output.write(&[if *self {
+            ElementTypeCode::True
+        } else {
+            ElementTypeCode::False
+        } as u8])
     }
 }
 
 impl Serialize for Value {
-    fn serialize<W: Write>(&self, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
+    fn serialize<W: Write>(
+        &self,
+        options: &SerializationOptions,
+        mut output: W,
+    ) -> std::io::Result<usize> {
         match self {
             Value::Null => output.write(&[ElementTypeCode::None as u8]),
             Value::Bool(b) => b.serialize(options, output),
@@ -95,19 +119,23 @@ impl Serialize for Value {
                     return f.serialize(options, output);
                 }
                 unreachable!("No variants left");
-            },
+            }
         }
     }
 }
 
 impl Serialize for &[Value] {
-    fn serialize<W: Write>(&self, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {       
+    fn serialize<W: Write>(
+        &self,
+        options: &SerializationOptions,
+        mut output: W,
+    ) -> std::io::Result<usize> {
         let mut values = Vec::<u8>::new();
-        
+
         let mut total = 0;
         total += output.write(&[ElementTypeCode::Array as u8])?;
         total += output.write(&(self.len() as u32).to_le_bytes())?;
-        
+
         let mut offset = total + 4 * self.len();
         for item in self.iter() {
             total += output.write(&(offset as u32).to_le_bytes())?;
@@ -208,15 +236,20 @@ fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Op
     })
 }
 
-fn encode_kvs<W: Write>(kvs: &[(&str, &Value, usize)], options: &SerializationOptions, mut output: W, descriptors_offset: usize) -> std::io::Result<usize> {
+fn encode_kvs<W: Write>(
+    kvs: &[(&str, &Value)],
+    options: &SerializationOptions,
+    mut output: W,
+    descriptors_offset: usize,
+) -> std::io::Result<usize> {
     let mut serialized_values = Vec::<u8>::new();
 
     let mut current_key_offset = descriptors_offset + 8 * kvs.len();
-    let total_key_size: usize = kvs.iter().map(|(key, _value, _index)| key.len() + 1).sum();
+    let total_key_size: usize = kvs.iter().map(|(key, _value)| key.len() + 1).sum();
     let mut current_value_offset = current_key_offset + total_key_size;
     let mut total_written = 0;
 
-    for (key, value, _index) in kvs.iter() {
+    for (key, value) in kvs.iter() {
         let key_length = key.len();
 
         let value_length = value.serialize(options, &mut serialized_values)?;
@@ -229,32 +262,39 @@ fn encode_kvs<W: Write>(kvs: &[(&str, &Value, usize)], options: &SerializationOp
         current_value_offset += value_length;
     }
 
-    for (key, _value, _index) in kvs.iter() {
+    for (key, _value) in kvs.iter() {
         total_written += output.write(key.as_bytes())?;
         total_written += output.write(&[0u8])?;
     }
     total_written += output.write(serialized_values.as_ref())?;
-    
+
     Ok(total_written)
 }
 
-fn serialize_chd<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
+fn serialize_chd<'a, W: Write>(
+    map: impl Iterator<Item = (&'a str, &'a Value)>,
+    options: &SerializationOptions,
+    mut output: W,
+) -> std::io::Result<usize> {
     let kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
     let mut i = 0;
     let hash_state = loop {
-        if let Some(hash_state) = try_generate_hash(kvs.iter().map(|(k, _v)| *k), 0x500+i) {
-            break hash_state
+        if let Some(hash_state) = try_generate_hash(kvs.iter().map(|(k, _v)| *k), 0x500 + i) {
+            break hash_state;
         }
         i += 1;
         if i > 10 {
             Err(std::io::ErrorKind::InvalidData)?;
         }
     };
-    let kvs: Vec<_> = hash_state.map.iter().map(|source_index| {
-        let (k, v) = kvs[*source_index];
-        (k, v, 0)
-    }).collect();
-    
+    let kvs: Vec<_> = hash_state
+        .map
+        .iter()
+        .map(|source_index| {
+            kvs[*source_index]
+        })
+        .collect();
+
     let mut total_written = 0;
     total_written += output.write(&[ElementTypeCode::MapCHD as u8])?;
     total_written += output.write(&(kvs.len() as u32).to_le_bytes())?;
@@ -263,19 +303,25 @@ fn serialize_chd<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, op
         total_written += output.write(&d1.to_le_bytes())?;
         total_written += output.write(&d2.to_le_bytes())?;
     }
-    
+
     total_written += encode_kvs(&kvs, options, output, total_written)?;
 
     Ok(total_written)
 }
 
-fn serialize_eytzinger<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value)>, options: &SerializationOptions, mut output: W) -> std::io::Result<usize> {
-    let mut kvs: Vec<_> = map.map(|(k, v)| (k, v, 0usize)).collect();
-    kvs.sort_by_key(|(key, _value, _index)| *key);
-    for (idx, idx1) in eytzinger::PermutationGenerator::new(kvs.len()).enumerate() {
-        kvs[idx].2 = idx1;
-    }
-    kvs.sort_by_key(|(_key, _value, index)| *index);
+fn serialize_eytzinger<'a, W: Write>(
+    map: impl Iterator<Item = (&'a str, &'a Value)>,
+    options: &SerializationOptions,
+    mut output: W,
+) -> std::io::Result<usize> {
+    let mut kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
+    kvs.sort_by_key(|(key, _value)| *key);
+
+    let kvs: Vec<_> = eytzinger::PermutationGenerator::new(kvs.len())
+        .map(|source_index| {
+            kvs[source_index]
+        })
+        .collect();
 
     let mut total_written = 0;
     total_written += output.write(&[ElementTypeCode::Map as u8])?;
@@ -287,7 +333,11 @@ fn serialize_eytzinger<'a, W: Write>(map: impl Iterator<Item=(&'a str, &'a Value
 }
 
 impl<S: AsRef<str>, HS> Serialize for HashMap<S, Value, HS> {
-    fn serialize<W: Write>(&self, options: &SerializationOptions, output: W) -> std::io::Result<usize> {
+    fn serialize<W: Write>(
+        &self,
+        options: &SerializationOptions,
+        output: W,
+    ) -> std::io::Result<usize> {
         let kvs = self.iter().map(|(k, v)| (k.as_ref(), v));
         if self.len() >= options.chd_threshold {
             serialize_chd(kvs, options, output)
@@ -298,7 +348,11 @@ impl<S: AsRef<str>, HS> Serialize for HashMap<S, Value, HS> {
 }
 
 impl Serialize for serde_json::Map<String, Value> {
-    fn serialize<W: Write>(&self, options: &SerializationOptions, output: W) -> std::io::Result<usize> {
+    fn serialize<W: Write>(
+        &self,
+        options: &SerializationOptions,
+        output: W,
+    ) -> std::io::Result<usize> {
         let kvs = self.iter().map(|(k, v)| (k.as_ref(), v));
         if self.len() >= options.chd_threshold {
             serialize_chd(kvs, options, output)

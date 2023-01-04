@@ -1,7 +1,7 @@
-use std::str::FromStr;
-use sbson::serializer::{Serialize, SerializationOptions};
 use sbson;
+use sbson::serializer::{SerializationOptions, Serialize};
 use serde_json;
+use std::str::FromStr;
 
 fn main() {
     let foo: Vec<_> = std::env::args().collect();

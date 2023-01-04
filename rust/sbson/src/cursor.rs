@@ -39,9 +39,9 @@ pub struct Cursor<T> {
 impl<T> std::fmt::Debug for Cursor<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cursor")
-         .field("range", &self.range)
-         .field("raw_cursor", &self.raw_cursor)
-         .finish()
+            .field("range", &self.range)
+            .field("raw_cursor", &self.raw_cursor)
+            .finish()
     }
 }
 

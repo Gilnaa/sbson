@@ -369,14 +369,18 @@ impl RawCursor {
 
 impl<'a> MapIter<'a> {
     fn get_item_at_index(&self) -> Result<(&'a str, Range<usize>), CursorError> {
-
-        let MapDescriptor { key_offset, key_length, value_offset } = get_map_descriptor(self.descriptors, self.index as usize)?;
+        let MapDescriptor {
+            key_offset,
+            key_length,
+            value_offset,
+        } = get_map_descriptor(self.descriptors, self.index as usize)?;
 
         let key = &self.whole_buffer[key_offset..key_offset + key_length];
         let key = core::str::from_utf8(key).map_err(|_| CursorError::Utf8Error)?;
 
         let next_value_offset = if self.index < self.max - 1 {
-            let MapDescriptor { value_offset, .. } = get_map_descriptor(self.descriptors, self.index as usize + 1)?;
+            let MapDescriptor { value_offset, .. } =
+                get_map_descriptor(self.descriptors, self.index as usize + 1)?;
             value_offset as usize
         } else {
             self.whole_buffer.len()
