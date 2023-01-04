@@ -2,6 +2,8 @@ use super::ElementTypeCode;
 use std::collections::HashMap;
 use std::io::Write;
 
+mod serde_json_integration;
+
 #[derive(Clone, Debug)]
 pub struct SerializationOptions {
     /// Determines the minimum amount of map elements that will trigger CHD generation
@@ -28,21 +30,15 @@ pub trait Serialize {
     ) -> std::io::Result<usize>;
 }
 
-// /// Represents any valid JSON value.
-// ///
-// /// See the [`serde_json::value` module documentation](self) for usage examples.
-// #[derive(Clone, Eq, PartialEq)]
-// pub enum Value {
-//     Null,
-//     Bool(bool),
-//     SignedInteger(i64),
-//     UnsignedInteger(i64),
-//     String(String),
-//     Array(Vec<Value>),
-//     Object(std::collections::HashMap<String, Value>),
-// }
-
-use serde_json::Value;
+impl<T: Serialize> Serialize for &T {
+    fn serialize<W: Write>(
+        &self,
+        options: &SerializationOptions,
+        output: W,
+    ) -> std::io::Result<usize> {
+        (*self).serialize(options, output)
+    }
+}
 
 macro_rules! serialize_integer {
     ($integer_ty:ty, $type_code:expr) => {
@@ -91,36 +87,6 @@ impl Serialize for bool {
         } else {
             ElementTypeCode::False
         } as u8])
-    }
-}
-
-impl Serialize for Value {
-    fn serialize<W: Write>(
-        &self,
-        options: &SerializationOptions,
-        mut output: W,
-    ) -> std::io::Result<usize> {
-        match self {
-            Value::Null => output.write(&[ElementTypeCode::None as u8]),
-            Value::Bool(b) => b.serialize(options, output),
-            // Value::SignedInteger(i) => i.serialize(options, output),
-            // Value::UnsignedInteger(i) => i.serialize(options, output),
-            Value::String(s) => s.as_str().serialize(options, output),
-            Value::Array(val) => val.as_slice().serialize(options, output),
-            Value::Object(m) => m.serialize(options, output),
-            Value::Number(num) => {
-                if let Some(u) = num.as_u64() {
-                    return u.serialize(options, output);
-                }
-                if let Some(i) = num.as_i64() {
-                    return i.serialize(options, output);
-                }
-                if let Some(f) = num.as_f64() {
-                    return f.serialize(options, output);
-                }
-                unreachable!("No variants left");
-            }
-        }
     }
 }
 
@@ -236,8 +202,8 @@ fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Op
     })
 }
 
-fn encode_kvs<W: Write>(
-    kvs: &[(&str, &Value)],
+fn encode_kvs<W: Write, V: Serialize>(
+    kvs: &[&(&str, V)],
     options: &SerializationOptions,
     mut output: W,
     descriptors_offset: usize,
@@ -271,8 +237,8 @@ fn encode_kvs<W: Write>(
     Ok(total_written)
 }
 
-fn serialize_chd<'a, W: Write>(
-    map: impl Iterator<Item = (&'a str, &'a Value)>,
+fn serialize_chd<'a, W: Write, V: Serialize>(
+    map: impl Iterator<Item = (&'a str, V)>,
     options: &SerializationOptions,
     mut output: W,
 ) -> std::io::Result<usize> {
@@ -290,7 +256,7 @@ fn serialize_chd<'a, W: Write>(
     let kvs: Vec<_> = hash_state
         .map
         .iter()
-        .map(|source_index| kvs[*source_index])
+        .map(|source_index| &kvs[*source_index])
         .collect();
 
     let mut total_written = 0;
@@ -302,13 +268,13 @@ fn serialize_chd<'a, W: Write>(
         total_written += output.write(&d2.to_le_bytes())?;
     }
 
-    total_written += encode_kvs(&kvs, options, output, total_written)?;
+    total_written += encode_kvs(&kvs[..], options, output, total_written)?;
 
     Ok(total_written)
 }
 
-fn serialize_eytzinger<'a, W: Write>(
-    map: impl Iterator<Item = (&'a str, &'a Value)>,
+fn serialize_eytzinger<'a, W: Write, V: Serialize>(
+    map: impl Iterator<Item = (&'a str, V)>,
     options: &SerializationOptions,
     mut output: W,
 ) -> std::io::Result<usize> {
@@ -316,34 +282,19 @@ fn serialize_eytzinger<'a, W: Write>(
     kvs.sort_by_key(|(key, _value)| *key);
 
     let kvs: Vec<_> = eytzinger::PermutationGenerator::new(kvs.len())
-        .map(|source_index| kvs[source_index])
+        .map(|source_index| &kvs[source_index])
         .collect();
 
     let mut total_written = 0;
     total_written += output.write(&[ElementTypeCode::Map as u8])?;
     total_written += output.write(&(kvs.len() as u32).to_le_bytes())?;
 
-    total_written += encode_kvs(&kvs, options, output, total_written)?;
+    total_written += encode_kvs(&kvs[..], options, output, total_written)?;
 
     Ok(total_written)
 }
 
-impl<S: AsRef<str>, HS> Serialize for HashMap<S, Value, HS> {
-    fn serialize<W: Write>(
-        &self,
-        options: &SerializationOptions,
-        output: W,
-    ) -> std::io::Result<usize> {
-        let kvs = self.iter().map(|(k, v)| (k.as_ref(), v));
-        if self.len() >= options.chd_threshold {
-            serialize_chd(kvs, options, output)
-        } else {
-            serialize_eytzinger(kvs, options, output)
-        }
-    }
-}
-
-impl Serialize for serde_json::Map<String, Value> {
+impl<K: AsRef<str>, V: Serialize, HS> Serialize for HashMap<K, V, HS> {
     fn serialize<W: Write>(
         &self,
         options: &SerializationOptions,
