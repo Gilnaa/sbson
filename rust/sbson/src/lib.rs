@@ -22,9 +22,6 @@ extern crate core;
 
 mod raw_cursor;
 
-// #[cfg(feature = "std")]
-// mod cached_map_cursor;
-
 mod cursor;
 #[cfg(feature = "pyo3")]
 mod pyo3;
@@ -36,9 +33,6 @@ pub mod serializer;
 
 #[cfg(feature = "serde")]
 pub use crate::serde::from_bytes;
-
-// #[cfg(feature = "std")]
-// pub use cached_map_cursor::CachedMapCursor;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
