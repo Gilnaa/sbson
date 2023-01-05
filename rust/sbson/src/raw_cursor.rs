@@ -245,6 +245,24 @@ impl RawCursor {
         Ok(descriptors)
     }
 
+    /// Perform a CHD (compress-hash-displace) hashmap lookup in the given SBSON-node buffer.
+    /// This is an O(1) operation.
+    ///
+    /// This implementation of CHD lookup works by deriving three parameters from the hash of the key:
+    /// ```notest
+    /// g, f1, f2 = hash(key, seed)
+    /// ```
+    ///
+    /// The `seed` is an arbitrary per-hashmap value that is used in the generation process.
+    ///
+    /// `g` is used to distribute the keys into different buckets.
+    ///
+    /// Each bucket is serialized as a pair of 32bit values ("displacements"), `d1, d2`.
+    /// The displacement values are generated such that `index = displace(f1, f2, d1, d2)` will
+    /// be unique for each of the pre-defined keys.
+    ///
+    /// After we derive an index that points at a key-value pair, we can read the stored key and
+    /// make sure that it is indeed the key that was given to the lookup.
     fn get_value_and_index_by_key_chd(
         &self,
         buffer: &[u8],
@@ -252,15 +270,24 @@ impl RawCursor {
     ) -> Result<(usize, Range<usize>, RawCursor), CursorError> {
         let chd_seed_offset = ELEMENT_TYPE_SIZE + U32_SIZE_BYTES;
         let chd_displacement_start = chd_seed_offset + U32_SIZE_BYTES;
-        let seed = get_u32_at_offset(buffer, chd_seed_offset)? as u64;
         let bucket_count = calculate_bucket_count(self.child_count);
 
+        // Retrieve the seed and displacemente values.
+        let seed = get_u32_at_offset(buffer, chd_seed_offset)? as u64;
         let hashes = phf_shared::hash(key, &seed);
-        let bucket_offset =
-            chd_displacement_start + (U32_SIZE_BYTES * 2) * (hashes.g as usize % bucket_count);
+        let bucket_index = hashes.g as usize % bucket_count;
+        let bucket_offset = chd_displacement_start + (U32_SIZE_BYTES * 2) * bucket_index;
         let (d1, d2) = get_u32_pair_at_offset(buffer, bucket_offset)?;
+
+        // Displace to get an item index.
         let index = phf_shared::displace(hashes.f1, hashes.f2, d1, d2) % self.child_count;
         let index = index as usize;
+
+        // Equate the stored key to the requested key; any non-existent key
+        // will also reach *some* index.
+        //
+        // TODO: Both `get_key_buffer_by_index` and `get_value_by_index`
+        //       will read the same descriptor; should be consolidated into one read.
         let stored_key = self.get_key_buffer_by_index(buffer, index)?;
         if key.as_bytes() != stored_key {
             Err(CursorError::KeyNotFound)
@@ -369,14 +396,18 @@ impl RawCursor {
 
 impl<'a> MapIter<'a> {
     fn get_item_at_index(&self) -> Result<(&'a str, Range<usize>), CursorError> {
-
-        let MapDescriptor { key_offset, key_length, value_offset } = get_map_descriptor(self.descriptors, self.index as usize)?;
+        let MapDescriptor {
+            key_offset,
+            key_length,
+            value_offset,
+        } = get_map_descriptor(self.descriptors, self.index as usize)?;
 
         let key = &self.whole_buffer[key_offset..key_offset + key_length];
         let key = core::str::from_utf8(key).map_err(|_| CursorError::Utf8Error)?;
 
         let next_value_offset = if self.index < self.max - 1 {
-            let MapDescriptor { value_offset, .. } = get_map_descriptor(self.descriptors, self.index as usize + 1)?;
+            let MapDescriptor { value_offset, .. } =
+                get_map_descriptor(self.descriptors, self.index as usize + 1)?;
             value_offset as usize
         } else {
             self.whole_buffer.len()

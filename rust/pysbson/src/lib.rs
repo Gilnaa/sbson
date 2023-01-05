@@ -151,13 +151,13 @@ impl PyCursor {
     /// Query along the given path and return a cursor pointing to the specified node.
     fn goto(&self, path_segments: Vec<PathSegment>) -> PyResult<Self> {
         let current_node = match &self.cursor_impl {
-            CursorImpl::Generic(g) => g
+            CursorImpl::Generic(g) => g,
         };
         let cursor = current_node.goto(path_segments.iter().map(|seg| match seg {
-                PathSegment::Key(k) => sbson::PathSegment::Key(k.as_str()),
-                PathSegment::Index(i) => sbson::PathSegment::Index(*i),
+            PathSegment::Key(k) => sbson::PathSegment::Key(k.as_str()),
+            PathSegment::Index(i) => sbson::PathSegment::Index(*i),
         }))?;
-        
+
         let mut new_path_segments = self.path_segments.clone();
         new_path_segments.extend(path_segments);
 
@@ -181,7 +181,9 @@ impl PyCursor {
     fn keys(&self) -> Result<Vec<&str>, CursorError> {
         let v = match &self.cursor_impl {
             CursorImpl::Generic(g) => match g.get_element_type() {
-                ElementTypeCode::Map | ElementTypeCode::MapCHD => g.iter_map()?.map(|(key, _cursor)| key).collect(),
+                ElementTypeCode::Map | ElementTypeCode::MapCHD => {
+                    g.iter_map()?.map(|(key, _cursor)| key).collect()
+                }
                 _ => vec![],
             },
             // CursorImpl::CachedMap(cache) => cache.children.keys().cloned().collect(),
@@ -194,7 +196,10 @@ fn pythonize(py: Python<'_>, cursor: Cursor<&[u8]>) -> PyResult<PyObject> {
     let value = match cursor.get_element_type() {
         ElementTypeCode::Map | ElementTypeCode::MapCHD => cursor
             .iter_map()?
-            .flat_map(|(key, cursor)| pythonize(py, cursor).ok().map(|obj| (key, obj)))
+            .flat_map(|(key, cursor)| {
+                let value = pythonize(py, cursor).ok().map(|obj| (key, obj));
+                value
+            })
             .into_py_dict(py)
             .into(),
         ElementTypeCode::Array => {

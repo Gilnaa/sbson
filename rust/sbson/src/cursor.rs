@@ -27,13 +27,22 @@ use core::ops::Range;
 ///
 /// The supplied buffer type can be, for example, any of `&[u8]`, `Arc<[u8]>`, `Rc<[u8]>`, etc.
 /// Beware of supplying `Vec<u8>` and the like, as creating sub-cursors may clone the entire buffer.
-#[derive(Debug, Clone)]
-pub struct Cursor<T: Clone + AsRef<[u8]>> {
+#[derive(Clone)]
+pub struct Cursor<T> {
     /// A reference to the entire top-level document
     pub(crate) buffer: T,
     /// The range of the current pointed-to element inside the buffer.
     pub(crate) range: Range<usize>,
     pub(crate) raw_cursor: RawCursor,
+}
+
+impl<T> std::fmt::Debug for Cursor<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cursor")
+            .field("range", &self.range)
+            .field("raw_cursor", &self.raw_cursor)
+            .finish()
+    }
 }
 
 impl<T: Clone + AsRef<[u8]>> Cursor<T> {
@@ -199,7 +208,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
     pub fn get_u32(&self) -> Result<u32, CursorError> {
         self.raw_cursor
-            .ensure_element_type(ElementTypeCode::Int32)?;
+            .ensure_element_type(ElementTypeCode::UInt32)?;
 
         Ok(u32::from_le_bytes(get_byte_array_at(
             self.payload_scoped_buffer(),
@@ -209,7 +218,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
     pub fn get_u64(&self) -> Result<u64, CursorError> {
         self.raw_cursor
-            .ensure_element_type(ElementTypeCode::Int64)?;
+            .ensure_element_type(ElementTypeCode::UInt64)?;
 
         Ok(u64::from_le_bytes(get_byte_array_at(
             self.payload_scoped_buffer(),
@@ -270,9 +279,7 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
 
     /// Iterate over the children of this map node.
     /// Malformed children are silently dropped.
-    pub fn iter_map<'a>(
-        &'a self,
-    ) -> Result<impl Iterator<Item = (&'a str, Self)> + 'a, CursorError> {
+    pub fn iter_map(&self) -> Result<impl Iterator<Item = (&str, Self)>, CursorError> {
         Ok(self
             .raw_cursor
             .iter_map(self.range.clone(), self.scoped_buffer())?
@@ -286,10 +293,10 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
     }
 
     /// Iterate over the children of this map node, returning borrowed cursors.
-    /// Malformed
-    pub fn iter_map_borrowed<'a>(
-        &'a self,
-    ) -> Result<impl Iterator<Item = (&'a str, Cursor<&'a [u8]>)>, CursorError> {
+    /// Malformed children are silently dropped.
+    pub fn iter_map_borrowed(
+        &self,
+    ) -> Result<impl Iterator<Item = (&str, Cursor<&[u8]>)>, CursorError> {
         Ok(self
             .raw_cursor
             .iter_map(self.range.clone(), self.scoped_buffer())?
@@ -301,6 +308,8 @@ impl<T: Clone + AsRef<[u8]>> Cursor<T> {
             }))
     }
 
+    /// Iterate over the items of this array node.
+    /// Malformed or descriptors will be silently dropped.
     pub fn iter_array(&self) -> Result<impl Iterator<Item = Cursor<&[u8]>>, CursorError> {
         Ok(self
             .raw_cursor
@@ -335,8 +344,7 @@ impl<'data> Cursor<&'data [u8]> {
         // NOTE: Can also fail if there's an embedded null character; might want to use
         // `from_bytes_until_nul` when stabilisied.
         // https://github.com/rust-lang/rust/issues/95027
-        CStr::from_bytes_with_nul(&self.buffer.as_ref()[range])
-            .map_err(|_| CursorError::UnterminatedString)
+        CStr::from_bytes_with_nul(&self.buffer[range]).map_err(|_| CursorError::UnterminatedString)
     }
 
     /// Try to parse the string as a UTF-8 string.
@@ -364,6 +372,6 @@ impl<'data> Cursor<&'data [u8]> {
         let mut range = self.range.clone();
         // Skip the first element as it is the element type
         range.start += 1;
-        Ok(&self.buffer.as_ref()[range])
+        Ok(&self.buffer[range])
     }
 }
