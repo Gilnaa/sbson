@@ -30,6 +30,13 @@ pub trait Serialize {
     ) -> std::io::Result<usize>;
 }
 
+const DEFAULT_LAMBDA: usize = 5;
+struct CHDHashState {
+    key: u32,
+    disps: Vec<(u32, u32)>,
+    map: Vec<usize>,
+}
+
 impl<T: Serialize> Serialize for &T {
     fn serialize(
         &self,
@@ -112,13 +119,14 @@ impl<T: Serialize> Serialize for &[T] {
     }
 }
 
-const DEFAULT_LAMBDA: usize = 5;
-pub struct HashState {
-    pub key: u32,
-    pub disps: Vec<(u32, u32)>,
-    pub map: Vec<usize>,
-}
-fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Option<HashState> {
+/// This is a slightly modified version of the same function in the `phf_generator` crate.
+/// The original can be found [here](https://github.com/rust-phf/rust-phf/blob/21baa73941a0694ec48f437c0c0a6abfcc2f32d2/phf_generator/src/lib.rs#L28).
+///
+/// The function was extracted first and foremost to cut any dependencies on "private" implementation details of the
+/// `phf` crate, which might change in the future.
+///
+/// Other than that, the only change is the modification of this function to accept an iterator.
+fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Option<CHDHashState> {
     struct Bucket {
         idx: usize,
         keys: Vec<usize>,
@@ -193,7 +201,7 @@ fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Op
         return None;
     }
 
-    Some(HashState {
+    Some(CHDHashState {
         key,
         disps,
         map: map.into_iter().map(|i| i.unwrap()).collect(),
@@ -224,10 +232,9 @@ fn encode_kvs<V: Serialize>(
     let mut total_written = 0;
 
     // Save the current end of the buffer so we know where to return to later.
-    let absolute_descriptor_offset = output.len();
+    let mut current_descriptor_offset = output.len();
     output.extend(std::iter::repeat(0u8).take(total_descriptor_size));
     total_written += total_descriptor_size;
-    let mut descriptors = Vec::with_capacity(total_descriptor_size);
 
     for (key, _value) in key_value_pairs.iter() {
         total_written += output.write(key.as_bytes())?;
@@ -241,15 +248,16 @@ fn encode_kvs<V: Serialize>(
         total_written += value_length;
 
         let key_data = ((key_length as u32) << 24) | (current_key_offset as u32);
-        descriptors.extend_from_slice(&key_data.to_le_bytes());
-        descriptors.extend_from_slice(&(current_value_offset as u32).to_le_bytes());
+        output[current_descriptor_offset..current_descriptor_offset + 4]
+            .copy_from_slice(&key_data.to_le_bytes());
+        current_descriptor_offset += 4;
+        output[current_descriptor_offset..current_descriptor_offset + 4]
+            .copy_from_slice(&(current_value_offset as u32).to_le_bytes());
+        current_descriptor_offset += 4;
 
         current_key_offset += key_length + 1;
         current_value_offset += value_length;
     }
-
-    output[absolute_descriptor_offset..absolute_descriptor_offset + total_descriptor_size]
-        .copy_from_slice(&descriptors);
 
     Ok(total_written)
 }
@@ -261,6 +269,8 @@ fn serialize_chd<'a, V: Serialize>(
 ) -> std::io::Result<usize> {
     let kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
     let mut i = 0;
+
+    // TODO: Make this retry loop a bit cleaner.
     let hash_state = loop {
         if let Some(hash_state) = try_generate_hash(kvs.iter().map(|(k, _v)| *k), 0x500 + i) {
             break hash_state;

@@ -285,6 +285,9 @@ impl RawCursor {
 
         // Equate the stored key to the requested key; any non-existent key
         // will also reach *some* index.
+        //
+        // TODO: Both `get_key_buffer_by_index` and `get_value_by_index`
+        //       will read the same descriptor; should be consolidated into one read.
         let stored_key = self.get_key_buffer_by_index(buffer, index)?;
         if key.as_bytes() != stored_key {
             Err(CursorError::KeyNotFound)
