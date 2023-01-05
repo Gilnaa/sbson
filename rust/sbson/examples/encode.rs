@@ -23,7 +23,7 @@ fn main() {
     let sb_end = std::time::Instant::now();
 
     eprintln!(
-        "{:?} {:?}",
+        "JSON deserialization:\t{:?}\nSBSON serialization:\t{:?}",
         js_end.duration_since(js_start),
         sb_end.duration_since(sb_start)
     );
