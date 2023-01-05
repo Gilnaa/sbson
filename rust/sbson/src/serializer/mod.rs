@@ -101,19 +101,25 @@ impl<T: Serialize> Serialize for &[T] {
         options: &SerializationOptions,
         output: &mut Vec<u8>,
     ) -> std::io::Result<usize> {
-        let mut values = Vec::<u8>::new();
+        let total_descriptor_size = 4 * self.len();
 
         let mut total = 0;
         total += output.write(&[ElementTypeCode::Array as u8])?;
         total += output.write(&(self.len() as u32).to_le_bytes())?;
 
-        let mut offset = total + 4 * self.len();
-        for item in self.iter() {
-            total += output.write(&(offset as u32).to_le_bytes())?;
-            offset += item.serialize(options, &mut values)?;
-        }
+        let mut current_descriptor_offset = output.len();
+        output.extend(std::iter::repeat(0u8).take(total_descriptor_size));
+        total += total_descriptor_size;
 
-        total += output.write(values.as_slice())?;
+        let mut offset = total;
+        for item in self.iter() {
+            output[current_descriptor_offset..current_descriptor_offset + 4]
+                .copy_from_slice(&(offset as u32).to_le_bytes());
+            current_descriptor_offset += 4;
+            let value_size = item.serialize(options, output)?;
+            total += value_size;
+            offset += value_size;
+        }
 
         Ok(total)
     }
@@ -216,16 +222,17 @@ fn try_generate_hash<'a>(entries: impl Iterator<Item = &'a str>, key: u32) -> Op
 /// which includes the size of all elements prior to the data encoded by this function.
 ///
 /// In other words, this parameter described the amount of bytes that were already written as part of this node.
-fn encode_kvs<V: Serialize>(
-    key_value_pairs: &[&(&str, V)],
+fn encode_kvs<'a, V: Serialize + 'a>(
+    kv_count: usize,
+    key_value_pairs: impl Iterator<Item = &'a (&'a str, V)> + Clone,
     options: &SerializationOptions,
     output: &mut Vec<u8>,
     descriptors_offset: usize,
 ) -> std::io::Result<usize> {
-    let total_descriptor_size = 8 * key_value_pairs.len();
+    let total_descriptor_size = 8 * kv_count;
     let mut current_key_offset = descriptors_offset + total_descriptor_size;
     let total_key_size: usize = key_value_pairs
-        .iter()
+        .clone()
         .map(|(key, _value)| key.len() + 1)
         .sum();
     let mut current_value_offset = current_key_offset + total_key_size;
@@ -236,12 +243,12 @@ fn encode_kvs<V: Serialize>(
     output.extend(std::iter::repeat(0u8).take(total_descriptor_size));
     total_written += total_descriptor_size;
 
-    for (key, _value) in key_value_pairs.iter() {
+    for (key, _value) in key_value_pairs.clone() {
         total_written += output.write(key.as_bytes())?;
         total_written += output.write(&[0u8])?;
     }
 
-    for (key, value) in key_value_pairs.iter() {
+    for (key, value) in key_value_pairs {
         let key_length = key.len();
 
         let value_length = value.serialize(options, output)?;
@@ -280,11 +287,10 @@ fn serialize_chd<'a, V: Serialize>(
             Err(std::io::ErrorKind::InvalidData)?;
         }
     };
-    let kvs: Vec<_> = hash_state
+    let kvs_in_order = hash_state
         .map
         .iter()
-        .map(|source_index| &kvs[*source_index])
-        .collect();
+        .map(|source_index| &kvs[*source_index]);
 
     let mut total_written = 0;
     total_written += output.write(&[ElementTypeCode::MapCHD as u8])?;
@@ -295,7 +301,7 @@ fn serialize_chd<'a, V: Serialize>(
         total_written += output.write(&d2.to_le_bytes())?;
     }
 
-    total_written += encode_kvs(&kvs[..], options, output, total_written)?;
+    total_written += encode_kvs(kvs.len(), kvs_in_order, options, output, total_written)?;
 
     Ok(total_written)
 }
@@ -308,15 +314,14 @@ fn serialize_eytzinger<'a, V: Serialize>(
     let mut kvs: Vec<_> = map.map(|(k, v)| (k, v)).collect();
     kvs.sort_by_key(|(key, _value)| *key);
 
-    let kvs: Vec<_> = eytzinger::PermutationGenerator::new(kvs.len())
-        .map(|source_index| &kvs[source_index])
-        .collect();
+    let kvs_in_order =
+        eytzinger::PermutationGenerator::new(kvs.len()).map(|source_index| &kvs[source_index]);
 
     let mut total_written = 0;
     total_written += output.write(&[ElementTypeCode::Map as u8])?;
     total_written += output.write(&(kvs.len() as u32).to_le_bytes())?;
 
-    total_written += encode_kvs(&kvs[..], options, output, total_written)?;
+    total_written += encode_kvs(kvs.len(), kvs_in_order, options, output, total_written)?;
 
     Ok(total_written)
 }
